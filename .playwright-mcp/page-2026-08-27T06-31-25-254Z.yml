@@ -1,0 +1,20 @@
+- generic [ref=f12e3]:
+  - complementary "Document Outline" [ref=f12e4]:
+    - navigation "Table of Contents" [ref=f12e7]:
+      - paragraph [ref=f12e8]: No headings
+  - main [ref=f12e9]:
+    - button "Close outline" [expanded] [ref=f12e11] [cursor=pointer]:
+      - generic [ref=f12e12]: ☰
+      - generic [ref=f12e13]: Outline
+    - table [ref=f12e16]:
+      - rowgroup [ref=f12e21]:
+        - row [ref=f12e22]:
+          - cell [ref=f12e23]:
+            - paragraph [ref=f12e24]: Merged cell
+          - cell [ref=f12e25]:
+            - paragraph [ref=f12e26]: Cell 2
+        - row [ref=f12e27]:
+          - cell [ref=f12e28]:
+            - paragraph [ref=f12e29]: Row 2 merged
+          - cell [ref=f12e30]:
+            - paragraph [ref=f12e31]: Cell 4

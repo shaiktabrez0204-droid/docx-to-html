@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Converted Document</title>
+  <style>
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0;height:100%;}
+    body{font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;background:#fff;overflow:hidden;}
+    .page-frame{display:flex;flex-direction:column;height:100vh;overflow:hidden;}
+    .viewer-title{padding:10px 16px 9px;border-bottom:1px solid #e5e7eb;background:#fff;flex-shrink:0;}
+    .viewer-title .doc-title{margin:0;font-size:14px;font-weight:600;line-height:1.4;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .viewer{display:flex;flex:1;min-height:0;overflow:hidden;}
+    .viewer-sidebar{width:280px;min-width:280px;max-width:280px;background:#fcfcfc;border-right:1px solid #e5e7eb;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;transition:width .18s ease,min-width .18s ease,opacity .18s ease,transform .18s ease;}
+    .viewer.viewer--sidebar-collapsed .viewer-sidebar{width:0;min-width:0;max-width:0;border-right-width:0;opacity:0;pointer-events:none;transform:translateX(-8px);overflow:hidden;}
+    .sidebar-header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #e5e7eb;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#374151;white-space:nowrap;flex-shrink:0;}
+    .sidebar-title{flex:1;overflow:hidden;text-overflow:ellipsis;}
+    .toc{flex:1;overflow-y:auto;overflow-x:hidden;padding:8px;}
+    .toc-empty{color:#888;font-size:13px;padding:12px;}
+    .toc-tree{list-style:none;margin:0;padding:0;}
+    .toc-tree ul{list-style:none;margin:0;padding-left:14px;}
+    .toc-row{display:flex;align-items:center;gap:2px;}
+    .toc-link{flex:1;display:block;padding:4px 6px;font-size:13px;color:#374151;text-decoration:none;border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .toc-link:hover{background:#eef1f5;color:#111;}
+    .toc-link.is-active{background:#dbeafe;color:#1d4ed8;font-weight:600;}
+    .toc-link:focus-visible{outline:2px solid #2563eb;outline-offset:1px;}
+    .toc-parent{margin:1px 0;}
+    .toc-parent.is-collapsed>ul.toc-children{display:none;}
+    .toc-toggle{appearance:none;border:0;background:transparent;cursor:pointer;width:20px;height:20px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;font-size:10px;color:#6b7280;border-radius:3px;transition:transform .15s;}
+    .toc-toggle::before{content:"\25BC";display:block;font-size:9px;transition:transform .15s;}
+    .toc-parent.is-collapsed>.toc-row .toc-toggle::before{transform:rotate(-90deg);}
+    .toc-toggle:hover{background:#e5e7eb;color:#111;}
+    .toc-toggle:focus-visible{outline:2px solid #2563eb;}
+    .toc-leaf{padding-left:22px;}
+    .doc-main{flex:1;overflow-y:auto;overflow-x:hidden;background:#efefef;padding:0;display:flex;flex-direction:column;align-items:center;min-width:0;}
+    .doc-toolbar{position:sticky;top:0;z-index:5;width:100%;max-width:860px;display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(239,239,239,.92);backdrop-filter:blur(6px);}
+    .sidebar-toggle-main{appearance:none;border:1px solid #d1d5db;background:#fff;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:13px;line-height:1;display:inline-flex;align-items:center;gap:6px;color:#374151;box-shadow:0 1px 2px rgba(0,0,0,.06);}
+    .sidebar-toggle-main:hover{background:#f3f4f6;}
+    .sidebar-toggle-main:focus-visible{outline:2px solid #2563eb;outline-offset:2px;}
+    .docx-page{background:#fff;margin:16px auto 40px;box-shadow:0 1px 6px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);width:100%;max-width:860px;position:relative;flex-shrink:0;box-sizing:border-box;}
+    .docx-page[style]{max-width:min(860px,calc(100% - 32px)) !important;}
+    .docx-content{box-sizing:border-box;max-width:100%;overflow-wrap:break-word;}
+    img.docx-float{position:absolute;}
+    img.docx-float-wrapped{position:static;max-width:none;}
+    .docx-number{font:inherit;font-weight:inherit;font-style:inherit;margin-right:.4em;white-space:nowrap;}
+    nav.toc .docx-number{margin-right:.4em;}
+    table.docx-table{border-collapse:collapse;width:100%;margin:1em 0;}
+    table.docx-table td,table.docx-table th{border:1px solid #999;padding:6px 8px;vertical-align:top;word-wrap:break-word;}
+    table.docx-table td p{margin:0;}
+    header.docx-header,footer.docx-footer{border:1px dashed #bbb;padding:6px 8px;margin:6px 0;background:#fafafa;}
+    header.docx-header p,footer.docx-footer p{margin:0;}
+    .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.32);z-index:15;}
+    @media (max-width:780px){.viewer-sidebar{position:fixed;left:0;top:0;bottom:0;z-index:20;width:280px;min-width:280px;max-width:280px;transform:translateX(-100%);transition:transform .22s ease;opacity:1;pointer-events:auto;border-right:1px solid #e5e7eb;}
+    .viewer.viewer--mobile-open .viewer-sidebar{transform:translateX(0);}
+    .viewer.viewer--sidebar-collapsed .viewer-sidebar{width:280px;min-width:280px;max-width:280px;opacity:1;pointer-events:auto;transform:translateX(-100%);border-right-width:1px;}
+    .viewer.viewer--mobile-open.viewer--sidebar-collapsed .viewer-sidebar{transform:translateX(0);}
+    .doc-main{padding-top:0;}}
+    @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
+  </style>
+</head>
+<body>
+<div class="page-frame">
+<header class="viewer-title"><h1 id="h1-introduction" class="doc-title">Introduction</h1></header>
+<div class="viewer">
+<aside id="viewer-sidebar" class="viewer-sidebar" aria-label="Document Outline">
+  <div class="sidebar-header">
+    <span class="sidebar-title">Document Outline</span>
+  </div>
+  <nav class="toc" aria-label="Table of Contents">
+<ul class="toc-tree" role="tree"><li class="toc-parent" role="treeitem" aria-expanded="true" data-level="1"><div class="toc-row"><button class="toc-toggle" aria-expanded="true" aria-controls="toc-h1-introduction" aria-label="Toggle section"></button><a class="toc-link" href="#h1-introduction" data-level="1">Introduction</a></div><ul id="toc-h1-introduction" class="toc-children" role="group"><ul class="toc-tree" role="tree"><li class="toc-parent" role="treeitem" aria-expanded="true" data-level="2"><div class="toc-row"><button class="toc-toggle" aria-expanded="true" aria-controls="toc-h2-architecture" aria-label="Toggle section"></button><a class="toc-link" href="#h2-architecture" data-level="2">Architecture</a></div><ul id="toc-h2-architecture" class="toc-children" role="group"><ul class="toc-tree" role="tree"><li class="toc-leaf" role="treeitem" data-level="3"><a class="toc-link" href="#h3-data-model" data-level="3">Data Model</a></li></ul></ul></li><li class="toc-leaf" role="treeitem" data-level="2"><a class="toc-link" href="#h2-implementation" data-level="2">Implementation</a></li></ul></ul></li><li class="toc-leaf" role="treeitem" data-level="1"><a class="toc-link" href="#h1-conclusion" data-level="1">Conclusion</a></li></ul>
+  </nav>
+</aside>
+<div id="sidebar-overlay" class="sidebar-overlay" hidden></div>
+<main class="doc-main" id="doc-main">
+<div class="doc-toolbar">
+  <button id="sidebar-toggle" class="sidebar-toggle-main" aria-expanded="true" aria-controls="viewer-sidebar" aria-label="Toggle outline">
+    <span aria-hidden="true">&#9776;</span> <span>Outline</span>
+  </button>
+</div>
+<div class="docx-page" style="position: relative; width: 816px; max-width: calc(100% - 32px); min-height: 1056px; box-sizing: border-box;">
+<div class="docx-content" style="position: relative; margin-left: 96px; margin-top: 96px; width: 624px; max-width: calc(100% - 112px); min-height: 864px; box-sizing: border-box;">
+<p>The intro paragraph.</p>
+<h2 id="h2-architecture" style="margin-top:10pt;margin-bottom:0pt"><span style="font-size:13pt;color:#4F81BD"><strong>Architecture</strong></span></h2>
+<p>Architecture body.</p>
+<h3 id="h3-data-model" style="margin-top:10pt;margin-bottom:0pt"><span style="color:#4F81BD"><strong>Data Model</strong></span></h3>
+<p>Data model body.</p>
+<h2 id="h2-implementation" style="margin-top:10pt;margin-bottom:0pt"><span style="font-size:13pt;color:#4F81BD"><strong>Implementation</strong></span></h2>
+<p>Implementation body.</p>
+<p>Table of Contents Entry............ 3</p>
+<p><span style="font-size:28pt"><strong>This is a big bold statement.</strong></span></p>
+<h1 id="h1-conclusion" style="margin-top:24pt;margin-bottom:0pt"><span style="font-size:14pt;color:#365F91"><strong>Conclusion</strong></span></h1>
+<p>The end.</p>
+
+</div>
+
+</div>
+</main>
+</div>
+</div>
+  <script>
+  (function(){
+    var viewer=document.querySelector('.viewer');
+    var sidebar=document.getElementById('viewer-sidebar');
+    var overlay=document.getElementById('sidebar-overlay');
+    var toggle=document.getElementById('sidebar-toggle');
+    var docMain=document.getElementById('doc-main');
+    if(!viewer||!sidebar||!overlay||!toggle||!docMain) return;
+    var mq=window.matchMedia('(max-width: 780px)');
+    function isMobile(){return mq.matches;}
+    function setSidebarOpen(open){
+      if(isMobile()){
+        viewer.classList.toggle('viewer--mobile-open',open);
+        overlay.hidden=!open;
+        viewer.classList.toggle('viewer--sidebar-collapsed',!open);
+      } else {
+        viewer.classList.toggle('viewer--sidebar-collapsed',!open);
+        viewer.classList.remove('viewer--mobile-open');
+        overlay.hidden=true;
+      }
+      toggle.setAttribute('aria-expanded',String(open));
+      toggle.setAttribute('aria-label',open?'Close outline':'Open outline');
+    }
+    function isSidebarOpen(){
+      if(isMobile()) return viewer.classList.contains('viewer--mobile-open');
+      return !viewer.classList.contains('viewer--sidebar-collapsed');
+    }
+    toggle.addEventListener('click',function(){setSidebarOpen(!isSidebarOpen());});
+    overlay.addEventListener('click',function(){setSidebarOpen(false);});
+    document.addEventListener('keydown',function(e){if(e.key==='Escape'&&isMobile()&&isSidebarOpen()) setSidebarOpen(false);});
+    setSidebarOpen(!isMobile());
+    var mqListener=function(){setSidebarOpen(!isMobile());};
+    if(mq.addEventListener) mq.addEventListener('change',mqListener); else if(mq.addListener) mq.addListener(mqListener);
+    var tocNav=document.querySelector('nav.toc');
+    if(tocNav){
+      tocNav.addEventListener('click',function(e){
+        var btn=e.target.closest('.toc-toggle');
+        if(!btn) return;
+        var li=btn.closest('.toc-parent');
+        if(!li) return;
+        var collapsed=li.classList.toggle('is-collapsed');
+        var expanded=!collapsed;
+        btn.setAttribute('aria-expanded',String(expanded));
+        li.setAttribute('aria-expanded',String(expanded));
+        var uid=btn.getAttribute('aria-controls');
+        var ul=document.getElementById(uid);
+        if(ul) ul.hidden=!expanded;
+      });
+    }
+    var titleEl=document.querySelector('.viewer-title .doc-title[id]');
+    var titleId=titleEl?titleEl.id:null;
+    var headings=Array.from(docMain.querySelectorAll('h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]'));
+    var linkById={};
+    document.querySelectorAll('a.toc-link[href^="#"]').forEach(function(a){linkById[a.getAttribute('href').slice(1)]=a;});
+    var activeId=null;
+    function setActive(id){
+      if(activeId===id) return;
+      if(activeId&&linkById[activeId]){linkById[activeId].classList.remove('is-active');linkById[activeId].removeAttribute('aria-current');}
+      activeId=id;
+      var link=linkById[id];
+      if(!link) return;
+      link.classList.add('is-active');
+      link.setAttribute('aria-current','location');
+      var el=link.closest('li');
+      while(el){
+        var parent=el.parentElement.closest('li.toc-parent');
+        if(parent){
+          parent.classList.remove('is-collapsed');
+          var b=parent.querySelector(':scope > .toc-row > .toc-toggle');
+          if(!b) b=parent.querySelector('.toc-toggle');
+          if(b){b.setAttribute('aria-expanded','true');var u=document.getElementById(b.getAttribute('aria-controls'));if(u) u.hidden=false;}
+          parent.setAttribute('aria-expanded','true');
+          el=parent;
+        } else break;
+      }
+      try{link.scrollIntoView({block:'nearest'});}catch(e){}
+    }
+    document.addEventListener('click',function(e){
+      var a=e.target.closest('a.toc-link');
+      if(!a) return;
+      var href=a.getAttribute('href');
+      if(!href||href.charAt(0)!=='#') return;
+      var id=href.slice(1);
+      var target=document.getElementById(id);
+      if(!target) return;
+      e.preventDefault();
+      if(id===titleId){
+        docMain.scrollTo({top:0,behavior:'smooth'});
+      } else {
+        target.scrollIntoView({behavior:'smooth',block:'start'});
+      }
+      history.pushState(null,'',href);
+      setActive(id);
+      if(isMobile()) setSidebarOpen(false);
+    });
+    if(headings.length && 'IntersectionObserver' in window){
+      var observer=new IntersectionObserver(function(entries){
+        var visible=entries.filter(function(en){return en.isIntersecting;});
+        if(!visible.length) return;
+        visible.sort(function(a,b){return a.boundingClientRect.top - b.boundingClientRect.top;});
+        var top=visible[0].target;
+        if(docMain.scrollTop<24 && titleId){ setActive(titleId); return; }
+        if(top&&top.id) setActive(top.id);
+      },{root:docMain,rootMargin:'-10% 0px -70% 0px',threshold:[0,1]});
+      headings.forEach(function(h){observer.observe(h);});
+      docMain.addEventListener('scroll',function(){ if(docMain.scrollTop<24 && titleId) setActive(titleId); },{passive:true});
+      var hval=location.hash.slice(1);
+      if(hval&&linkById[hval]) setActive(hval);
+      else if(titleId) setActive(titleId);
+    } else {
+      var onScroll=function(){
+        if(docMain.scrollTop<24 && titleId){ setActive(titleId); return; }
+        var cur=null;
+        var top=docMain.scrollTop+120;
+        for(var i=0;i<headings.length;i++){var hh=headings[i];if(hh.offsetTop<=top) cur=hh.id; else break;}
+        if(cur) setActive(cur);
+        else if(titleId) setActive(titleId);
+      };
+      docMain.addEventListener('scroll',onScroll,{passive:true});
+      onScroll();
+    }
+    window.__viewer={setSidebarOpen:setSidebarOpen,isSidebarOpen:isSidebarOpen,setActive:setActive};
+  })();
+  </script>
+
+
+</body>
+</html>
