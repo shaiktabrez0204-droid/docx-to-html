@@ -104,8 +104,44 @@ class NumberingResolver:
                 del c[k]
 
             c[num_ilvl] = c.get(num_ilvl, start - 1) + 1
-            # skipped parent levels render as 0 in OOXML lvlText
-            p.numbering_path = [c.get(k, 0) for k in range(0, num_ilvl + 1)]
+            # Skipped heading levels must not create fake zero counters.
+            # Previous code used [c.get(k,0) for k in 0..ilvl] which produced
+            # [1,1,0,1] for H4 under H2 (missing H3). Collapse gaps so
+            # H1->H2->H4 becomes 1, 1.1, 1.1.1  (not 1.1.0.1).  Preserve genuine
+            # zero only if the numbering model legitimately starts at 0
+            # (start==0). Otherwise filter missing levels. Keep formats
+            # aligned with compacted path.
+            raw_path = [c.get(k) for k in range(0, num_ilvl + 1)]
+            # raw_path contains None for missing levels, int for present
+            compact_path: List[int] = []
+            compact_formats: List[str] = []
+            for k, val in enumerate(raw_path):
+                if val is None:
+                    continue
+                # If value is 0 and start for this level is 1, it's a missing
+                # level placeholder, not a genuine counter. Skip it.
+                # Genuine zero only when start==0.
+                lk = self.model.resolve_level(num_id, k)
+                lvl_start = lk.start if lk is not None else 1
+                if val == 0 and lvl_start != 0:
+                    continue
+                compact_path.append(val)
+                # formats already collected for 0..ilvl, but filter same indices
+                # formats[k] corresponds to level k
+                if k < len(formats):
+                    compact_formats.append(formats[k])
+                else:
+                    compact_formats.append("decimal")
+            # Fallback: if compact_path empty (all missing), keep original with zeros
+            # to avoid losing paragraph numbering entirely.
+            if compact_path:
+                p.numbering_path = compact_path
+                p.numbering_level_formats = compact_formats
+                # Keep original lvlText but format_numbering_label will clean
+                # trailing/duplicate dots caused by missing placeholders.
+            else:
+                p.numbering_path = [c.get(k, 0) for k in range(0, num_ilvl + 1)]
+                # keep formats as before
 
         return paragraphs
 

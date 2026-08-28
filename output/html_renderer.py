@@ -32,7 +32,12 @@ import html
 from typing import Optional
 
 from core.model import Run, Paragraph, Table, Row, Cell, BorderEdge, HeaderFooter, Section, Image, ImageAsset, PageLayout, format_numbering_label
-from core.units import emu_to_px
+from core.units import emu_to_px, twip_to_emu
+
+# The document's effective default font size, in OOXML half-points. Runs whose
+# resolved size equals this default need no inline font-size (the .docx-content
+# base carries it). Updated per-document by render_html() from docDefaults.
+DEFAULT_FONT_HALF_POINTS = 22
 
 # Browser-safe MIME types that can be embedded via a data: URL. Others (e.g.
 # EMF/WMF) are extracted but must degrade safely rather than break the page.
@@ -117,9 +122,23 @@ def _effective_border(cell, table, edge: str, is_first_row: bool, is_last_row: b
 
 
 def _render_run_inner(run: Run) -> str:
+    ft = getattr(run, "field_type", None)
+    if ft in ("PAGE", "NUMPAGES", "PAGEREF"):
+        code = html.escape(getattr(run, "field_code", "") or "", quote=True)
+        lim = "Page number field - pagination not calculated in single-page HTML view"
+        if ft == "PAGE":
+            return '<span class="docx-page-number" data-field="PAGE" data-field-code="%s" title="%s" aria-label="Page number field"></span>' % (code, lim)
+        elif ft == "NUMPAGES":
+            return '<span class="docx-num-pages" data-field="NUMPAGES" data-field-code="%s" title="%s" aria-label="Total pages field"></span>' % (code, lim)
+        else:
+            return '<span class="docx-page-ref" data-field="PAGEREF" data-field-code="%s" title="%s" aria-label="Page reference field"></span>' % (code, lim)
+    if run.text == "\t":
+        return '<span class="docx-tab" data-tab="true"></span>'
+    if run.text == "\n":
+        return "<br>"
     if not run.text:
         return ""
-    content = run.text
+    content = html.escape(run.text)
     if run.bold is True:
         content = "<strong>%s</strong>" % content
     if run.italic is True:
@@ -130,7 +149,7 @@ def _render_run_inner(run: Run) -> str:
     if run.font_family and run.font_family != "Calibri":
         ff = run.font_family.replace("'", "\\'")
         style_parts.append("font-family:'%s'" % ff)
-    if run.font_size is not None and run.font_size != 11:
+    if run.font_size is not None and run.font_size != DEFAULT_FONT_HALF_POINTS:
         pt = run.font_size / 2
         pt_str = "%gpt" % pt
         style_parts.append("font-size:%s" % pt_str)
@@ -212,14 +231,17 @@ def _float_container(img: Image) -> str:
 
 def _is_wrap_float(img: Image) -> bool:
     """True when the wrap can use a real CSS float (genuine text flow)."""
-    if img.wrap_mode not in ("square", "topAndBottom"):
+    if img.wrap_mode not in ("square", "tight", "through"):
         return False
-    # A float needs a horizontal direction; only left/right aligns float.
     if img.alignment_horizontal in _LEFT_ALIGN:
         return True
     if img.alignment_horizontal in _RIGHT_ALIGN:
         return True
     return False
+
+
+def _is_top_bottom(img: Image) -> bool:
+    return img.wrap_mode == "topAndBottom"
 
 
 def _float_style(img: Image, page: PageLayout, container: str) -> str:
@@ -235,9 +257,69 @@ def _float_style(img: Image, page: PageLayout, container: str) -> str:
     hoffs = emu_to_px(img.offset_horizontal)
     voffs = emu_to_px(img.offset_vertical)
 
-    if _is_wrap_float(img):
-        # Real CSS float: text flows around the rectangle. Margins reserve the
-        # wrap distance so the rectangle is avoided, not overlapped.
+    if _is_top_bottom(img):
+        halign = img.alignment_horizontal
+        d = img.wrap_distances or {}
+        mt = emu_to_px(d.get("top", 0))
+        mr = emu_to_px(d.get("right", 0))
+        mb = emu_to_px(d.get("bottom", 0))
+        ml = emu_to_px(d.get("left", 0))
+        if halign in _LEFT_ALIGN or halign in _RIGHT_ALIGN or halign == "center":
+            style["display"] = "block"
+            style["clear"] = "both"
+            style["float"] = "none"
+            if halign == "center":
+                style["margin"] = "%dpx auto %dpx auto" % (mt, mb)
+            elif halign in _LEFT_ALIGN:
+                style["margin"] = "%dpx %dpx %dpx %dpx" % (mt, mr, mb, ml)
+                style["margin-left"] = "%dpx" % ml
+                style["margin-right"] = "auto"
+            elif halign in _RIGHT_ALIGN:
+                style["margin"] = "%dpx %dpx %dpx %dpx" % (mt, mr, mb, ml)
+                style["margin-left"] = "auto"
+                style["margin-right"] = "%dpx" % mr
+            else:
+                style["margin"] = "%dpx %dpx %dpx %dpx" % (mt, mr, mb, ml)
+        else:
+            style["position"] = "absolute"
+            if halign == "center":
+                style["left"] = "50%"
+                tx = "-50%"
+            elif halign in _RIGHT_ALIGN:
+                style["right"] = str(hoffs) + "px" if img.offset_horizontal is not None else "0px"
+                tx = "0"
+            elif halign in _LEFT_ALIGN:
+                style["left"] = str(hoffs) + "px" if img.offset_horizontal is not None else "0px"
+                tx = "0"
+            else:
+                if container == "page":
+                    style["left"] = "%dpx" % hoffs
+                elif container == "content":
+                    style["left"] = "%dpx" % hoffs
+                else:
+                    style["left"] = "%dpx" % hoffs
+                tx = "0"
+            valign = img.alignment_vertical
+            if valign == "center":
+                style["top"] = "50%"
+                ty = "-50%"
+            elif valign in ("bottom", "outside"):
+                style["bottom"] = str(voffs) + "px" if img.offset_vertical is not None else "0px"
+                ty = "0"
+            elif valign in ("top", "inside"):
+                style["top"] = str(voffs) + "px" if img.offset_vertical is not None else "0px"
+                ty = "0"
+            else:
+                if container == "page":
+                    style["top"] = "%dpx" % voffs
+                elif container == "content":
+                    style["top"] = "%dpx" % voffs
+                else:
+                    style["top"] = "%dpx" % voffs
+                ty = "0"
+            if tx != "0" or ty != "0":
+                style["transform"] = "translate(%s, %s)" % (tx, ty)
+    elif _is_wrap_float(img):
         halign = img.alignment_horizontal
         style["float"] = "left" if halign in _LEFT_ALIGN else "right"
         d = img.wrap_distances or {}
@@ -246,6 +328,9 @@ def _float_style(img: Image, page: PageLayout, container: str) -> str:
         mb = emu_to_px(d.get("bottom", 0))
         ml = emu_to_px(d.get("left", 0))
         style["margin"] = "%dpx %dpx %dpx %dpx" % (mt, mr, mb, ml)
+        if img.wrap_mode in ("tight", "through"):
+            style["shape-outside"] = "margin-box"
+            style["clip-path"] = "margin-box"
     else:
         # Absolute positioning within the chosen coordinate container.
         style["position"] = "absolute"
@@ -314,7 +399,12 @@ def render_float_image(img: Image, assets: Optional[dict], page: PageLayout) -> 
 
     container = _float_container(img)
     style = _float_style(img, page, container)
-    cls = "docx-float-wrapped" if _is_wrap_float(img) else "docx-float"
+    if _is_top_bottom(img) and (img.alignment_horizontal in _LEFT_ALIGN or img.alignment_horizontal in _RIGHT_ALIGN or img.alignment_horizontal == "center"):
+        cls = "docx-float-topbottom"
+    elif _is_wrap_float(img):
+        cls = "docx-float-wrapped"
+    else:
+        cls = "docx-float"
     attrs = [
         'src="%s"' % src,
         'class="%s"' % cls,
@@ -324,30 +414,58 @@ def render_float_image(img: Image, assets: Optional[dict], page: PageLayout) -> 
     return "<img %s>" % " ".join(attrs)
 
 
-def _render_content(para: Paragraph, assets, page, collected):
-    """Render ordered Run/Image content, splitting out container-level floats.
-
-    Returns the inner HTML for the paragraph. Inline images and in-paragraph
-    floats (paragraph-relative, or wrap floats) are rendered inline to preserve
-    document order. page/content-absolute floats are appended to ``collected``
-    as (container, img) so the caller can place them in the right box.
-
-    Consecutive Runs sharing the same href are grouped into a single <a> to
-    preserve the original OOXML hyperlink span.
-    """
-    items = para.content if para.content else para.runs
+def _render_items_segment(segment_items, assets, page, collected, is_hf=False):
+    """Render a list of Run/Image items (no tab) handling floats/hyperlinks."""
     parts = []
     needs_relative = False
     i = 0
-    while i < len(items):
-        item = items[i]
+    while i < len(segment_items):
+        item = segment_items[i]
         if isinstance(item, Image):
             if item.wrap_type == "anchor":
                 container = _float_container(item)
-                if _is_wrap_float(item) or container == "paragraph":
-                    if container == "paragraph":
-                        needs_relative = True
-                    parts.append(render_float_image(item, assets, page))
+                is_tb_block = _is_top_bottom(item) and (item.alignment_horizontal in _LEFT_ALIGN or item.alignment_horizontal in _RIGHT_ALIGN or item.alignment_horizontal == "center")
+                if _is_wrap_float(item) or is_tb_block or container == "paragraph":
+                    if is_hf:
+                        if container == "paragraph":
+                            needs_relative = True
+                        parts.append(render_float_image(item, assets, page))
+                    elif _is_wrap_float(item):
+                        anc = getattr(item, "anchor_paragraph_index", -1)
+                        if anc is None:
+                            anc = -1
+                        try:
+                            anc = int(anc)
+                        except Exception:
+                            anc = -1
+                        inner = render_float_image(item, assets, page)
+                        if 'data-anchor' not in inner:
+                            inner = inner.replace('<img ', '<img data-anchor="%d" ' % anc, 1)
+                        parts.append(inner)
+                    elif is_tb_block:
+                        anc = getattr(item, "anchor_paragraph_index", -1)
+                        if anc is None:
+                            anc = -1
+                        try:
+                            anc = int(anc)
+                        except Exception:
+                            anc = -1
+                        inner = render_float_image(item, assets, page)
+                        if 'data-anchor' not in inner:
+                            inner = inner.replace('<img ', '<img data-anchor="%d" ' % anc, 1)
+                        parts.append(inner)
+                    else:
+                        anc = getattr(item, "anchor_paragraph_index", -1)
+                        if anc is None:
+                            anc = -1
+                        try:
+                            anc = int(anc)
+                        except Exception:
+                            anc = -1
+                        inner = render_float_image(item, assets, page)
+                        parts.append('<span class="docx-float-wrap docx-para-float-wrap" data-anchor="%d">%s</span>' % (anc, inner))
+                        if container == "paragraph":
+                            needs_relative = True
                 else:
                     collected.append((container, item))
             else:
@@ -358,8 +476,8 @@ def _render_content(para: Paragraph, assets, page, collected):
         if href:
             group = []
             j = i
-            while j < len(items) and not isinstance(items[j], Image) and getattr(items[j], "href", None) == href:
-                group.append(items[j])
+            while j < len(segment_items) and not isinstance(segment_items[j], Image) and getattr(segment_items[j], "href", None) == href:
+                group.append(segment_items[j])
                 j += 1
             inner = "".join(_render_run_inner(r) for r in group)
             if inner:
@@ -368,6 +486,92 @@ def _render_content(para: Paragraph, assets, page, collected):
             continue
         parts.append(_render_run_inner(item))
         i += 1
+    return "".join(parts), needs_relative
+
+def _render_content(para: Paragraph, assets, page, collected, is_hf=False):
+    """Render ordered Run/Image content, splitting out container-level floats.
+
+    Returns the inner HTML for the paragraph. Inline images and in-paragraph
+    floats (paragraph-relative, or wrap floats) are rendered inline to preserve
+    document order. page/content-absolute floats are appended to ``collected``
+    as (container, img) so the caller can place them in the right box.
+
+    Consecutive Runs sharing the same href are grouped into a single <a> to
+    preserve the original OOXML hyperlink span.
+
+    Tab-stop aware: when paragraph has w:tabs, each tab Run (\\t) advances to
+    the next effective tab stop (sorted by pos, clear excluded). Segments after
+    a tab are absolutely positioned at that stop (left/center/right/decimal).
+    """
+    items = para.content if para.content else para.runs
+    has_tab = any(isinstance(it, Run) and it.text == "\t" for it in items)
+    if not has_tab:
+        return _render_items_segment(items, assets, page, collected, is_hf=is_hf)
+    segments = []
+    cur = []
+    for it in items:
+        if isinstance(it, Run) and it.text == "\t":
+            segments.append(cur)
+            cur = []
+        else:
+            cur.append(it)
+    segments.append(cur)
+    tabs = getattr(para, 'tabs', None) or []
+    eff = [t for t in tabs if t.val != "clear"]
+    eff = sorted(eff, key=lambda t: t.pos)
+    parts = []
+    needs_relative = False
+    has_leader = any(getattr(t, 'leader', None) and getattr(t, 'leader') != "none" for t in eff)
+    seg_html, seg_need = _render_items_segment(segments[0], assets, page, collected, is_hf=is_hf)
+    if has_leader and seg_html:
+        seg_html = '<span class="docx-tab-segment" data-tab="0" style="display:inline-block;">%s</span>' % seg_html
+        needs_relative = True
+    parts.append(seg_html)
+    needs_relative = needs_relative or seg_need
+    for idx in range(1, len(segments)):
+        seg = segments[idx]
+        tab = eff[idx-1] if idx-1 < len(eff) else None
+        seg_html2, seg_need2 = _render_items_segment(seg, assets, page, collected, is_hf=is_hf)
+        if tab is None:
+            fallback = '<span class="docx-tab" data-tab="true" style="display:inline-block; width:48px;"></span>'
+            if not seg_html2:
+                parts.append(fallback)
+                needs_relative = needs_relative or seg_need2
+            else:
+                parts.append(fallback + seg_html2)
+                needs_relative = needs_relative or seg_need2
+        else:
+            if not seg_html2:
+                continue
+            pos_px = round(tab.pos * 635 / 9525)
+            leader = getattr(tab, 'leader', None)
+            leader_html = ""
+            if leader and leader != "none":
+                leader_style_map = {"dot": "dotted", "hyphen": "dashed", "underscore": "solid", "heavy": "solid", "middleDot": "dotted"}
+                bs = leader_style_map.get(leader, "dotted")
+                bw = "2px" if leader == "heavy" else "1px"
+                leader_html = '<span class="docx-tab-leader" data-leader="%s" data-val="%s" data-pos="%d" style="position:absolute; height:0; border-bottom:%s %s #999; pointer-events:none; left:0; width:0; top:50%%;"></span>' % (leader, tab.val, pos_px, bw, bs)
+                needs_relative = True
+                parts.append(leader_html)
+            leader_style = ""
+            if getattr(tab, 'leader', None) == "dot":
+                leader_style = "border-bottom:1px dotted #999;"
+            if tab.val == "center":
+                wrapper = '<span class="docx-tab-segment" data-tab="%d" data-val="center" style="position:absolute; left:%dpx; transform:translateX(-50%%); white-space:nowrap; %s">%s</span>' % (idx, pos_px, leader_style, seg_html2)
+                needs_relative = True
+                parts.append(wrapper)
+            elif tab.val == "right":
+                wrapper = '<span class="docx-tab-segment" data-tab="%d" data-val="right" style="position:absolute; left:%dpx; transform:translateX(-100%%); white-space:nowrap; %s">%s</span>' % (idx, pos_px, leader_style, seg_html2)
+                needs_relative = True
+                parts.append(wrapper)
+            elif tab.val == "decimal":
+                wrapper = '<span class="docx-tab-segment" data-tab="%d" data-val="decimal" data-pos="%d" style="position:absolute; left:%dpx; white-space:nowrap; %s">%s</span>' % (idx, pos_px, pos_px, leader_style, seg_html2)
+                needs_relative = True
+                parts.append(wrapper)
+            else:
+                wrapper = '<span class="docx-tab-segment" data-tab="%d" data-val="left" style="position:absolute; left:%dpx; white-space:nowrap; %s">%s</span>' % (idx, pos_px, leader_style, seg_html2)
+                needs_relative = True
+                parts.append(wrapper)
     return "".join(parts), needs_relative
 
 
@@ -420,7 +624,7 @@ def _list_label(para: Paragraph) -> Optional[str]:
         para.numbering_path, para.numbering_level_formats, para.numbering_text_pattern)
 
 
-def _render_paragraph_html(para: Paragraph, assets=None, page=None):
+def _render_paragraph_html(para: Paragraph, assets=None, page=None, is_hf=False):
     """Render one paragraph (or heading) including its in-paragraph floats.
 
     Returns (html, needs_relative, external_floats) where external_floats is a
@@ -430,7 +634,7 @@ def _render_paragraph_html(para: Paragraph, assets=None, page=None):
     if page is None:
         page = PageLayout()
     collected = []
-    inner, needs_relative = _render_content(para, assets, page, collected)
+    inner, needs_relative = _render_content(para, assets, page, collected, is_hf=is_hf)
     layout = _paragraph_layout_style(para)
     extra_styles = []
     if needs_relative:
@@ -474,11 +678,36 @@ def _dxa_to_px(dxa: Optional[int]) -> int:
     return round(dxa * 635 / 9525)
 
 
-def _render_cell_content(cell: Cell, assets, page) -> str:
+def _wrap_block(inner_html: str, heading_id: Optional[str] = None,
+                level: Optional[int] = None) -> str:
+    """Wrap a rendered top-level block so the viewer can isolate sections.
+
+    Every document block (heading/paragraph/table/list) is placed inside a
+    ``.docx-block`` <div>. Heading blocks additionally carry ``data-heading-id``
+    and ``data-level`` so the viewer JS can compute section boundaries purely
+    from the existing heading hierarchy (no regex, no text inference). Non-heading
+    blocks carry no heading attributes and are bounded by the nearest surrounding
+    heading blocks at runtime.
+    """
+    attrs = 'class="docx-block"'
+    if heading_id:
+        attrs += ' data-heading-id="%s" data-level="%d"' % (
+            html.escape(heading_id, quote=True), int(level))
+    return "<div %s>%s</div>" % (attrs, inner_html)
+
+
+def _render_cell_content(cell: Cell, assets, page, table_anchor=None, is_hf=False) -> str:
     parts = []
     for para in cell.content:
+        if not is_hf and table_anchor is not None:
+            for it in getattr(para, "content", []) or []:
+                if isinstance(it, Image) and it.wrap_type == "anchor" and _float_container(it) == "paragraph":
+                    try:
+                        it.anchor_paragraph_index = int(table_anchor)
+                    except Exception:
+                        pass
         collected = []
-        inner, needs_relative = _render_content(para, assets, page, collected)
+        inner, needs_relative = _render_content(para, assets, page, collected, is_hf=is_hf)
         layout = _paragraph_layout_style(para)
         extra = []
         if needs_relative:
@@ -511,11 +740,22 @@ def _render_cell_content(cell: Cell, assets, page) -> str:
             else:
                 parts.append("<p%s>%s</p>" % (style_attr, inner))
         for _container, img in collected:
-            parts.append(render_float_image(img, assets, page))
+            if is_hf:
+                inner_float = render_float_image(img, assets, page)
+                parts.append('<div class="docx-hf-float-wrap">%s</div>' % inner_float)
+            else:
+                try:
+                    if table_anchor is not None:
+                        img.anchor_paragraph_index = table_anchor
+                except Exception:
+                    pass
+                inner_float = render_float_image(img, assets, page)
+                anc = table_anchor if table_anchor is not None else -1
+                parts.append('<div class="docx-float-wrap" data-anchor="%d">%s</div>' % (int(anc), inner_float))
     return "".join(parts)
 
 
-def render_table(table: Table, assets=None, page=None) -> str:
+def render_table(table: Table, assets=None, page=None, table_anchor=None, is_hf=False) -> str:
     if page is None:
         page = PageLayout()
     style_parts = []
@@ -583,7 +823,7 @@ def render_table(table: Table, assets=None, page=None) -> str:
                     else:
                         cell_style_parts.append("border-%s: none" % edge)
             style_a = ' style="%s"' % "; ".join(cell_style_parts) if cell_style_parts else ""
-            inner = _render_cell_content(cell, assets, page)
+            inner = _render_cell_content(cell, assets, page, table_anchor=table_anchor, is_hf=is_hf)
             cells_html.append("<td%s%s>%s</td>" % (" ".join([""] + attrs) if attrs else "", style_a, inner))
         rows_html.append("<tr>%s</tr>" % "".join(cells_html))
     return '<table class="docx-table"%s>%s<tbody>%s</tbody></table>' % (style_attr, colgroup, "".join(rows_html))
@@ -647,10 +887,13 @@ def _render_hf_blocks(blocks, assets, page):
     parts = []
     for b in blocks:
         if isinstance(b, Table):
-            parts.append(render_table(b, assets, page))
+            parts.append(render_table(b, assets, page, is_hf=True))
         elif isinstance(b, Paragraph):
-            html_str, _needs, _ext = _render_paragraph_html(b, assets, page)
+            html_str, _needs, _ext = _render_paragraph_html(b, assets, page, is_hf=True)
             parts.append(html_str)
+            for _container, img in _ext:
+                inner = render_float_image(img, assets, page)
+                parts.append('<div class="docx-hf-float-wrap">%s</div>' % inner)
     return "".join(parts)
 
 
@@ -700,9 +943,21 @@ def _viewer_style() -> str:
         "    .sidebar-toggle-main:focus-visible{outline:2px solid #2563eb;outline-offset:2px;}\n"
         "    .docx-page{background:#fff;margin:16px auto 40px;box-shadow:0 1px 6px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);width:100%;max-width:860px;position:relative;flex-shrink:0;box-sizing:border-box;}\n"
         "    .docx-page[style]{max-width:min(860px,calc(100% - 32px)) !important;}\n"
-        "    .docx-content{box-sizing:border-box;max-width:100%;overflow-wrap:break-word;}\n"
+        "    .docx-block.is-hidden{display:none !important;}\n"
+        "    .docx-float-wrap.is-hidden{display:none !important;}\n"
+        "    .docx-float-wrap{position:static;}\n"
+        "    .docx-para-float-wrap.is-hidden{display:none !important;}\n"
+        "    .docx-para-float-wrap{position:static;}\n"
+        "    img[data-anchor].is-hidden{display:none !important;}\n"
+        "    img.docx-float.is-hidden, img.docx-float-wrapped.is-hidden{display:none !important;}\n"
+        "    .docx-hf-float-wrap{position:static;}\n"
+        "    #exit-focus{margin-left:8px;}\n"
+        "    button.sidebar-toggle-main[hidden]{display:none !important;}\n"
+        "    .docx-content{box-sizing:border-box;max-width:100%;overflow-wrap:break-word;font-size:" + ("%.1f" % (DEFAULT_FONT_HALF_POINTS / 2.0)) + "pt;}\n"
         "    img.docx-float{position:absolute;}\n"
         "    img.docx-float-wrapped{position:static;max-width:none;}\n"
+        "    img.docx-float-topbottom{display:block; clear:both; float:none; max-width:100%; margin-left:auto; margin-right:auto;}\n"
+        "    img.docx-float-topbottom.is-hidden{display:none !important;}\n"
         "    .docx-number{font:inherit;font-weight:inherit;font-style:inherit;margin-right:.4em;white-space:nowrap;}\n"
         "    .docx-bullet{margin-right:.4em;}\n"
         "    nav.toc .docx-number{margin-right:.4em;}\n"
@@ -715,7 +970,14 @@ def _viewer_style() -> str:
         "    table.docx-table td,table.docx-table th{border:1px solid #999;padding:6px 8px;vertical-align:top;word-wrap:break-word;}\n"
         "    table.docx-table td p{margin:0;}\n"
         "    header.docx-header,footer.docx-footer{border:1px dashed #bbb;padding:6px 8px;margin:6px 0;background:#fafafa;}\n"
-        "    header.docx-header p,footer.docx-footer p{margin:0;}\n"
+        "    header.docx-header p,footer.docx-footer p{margin:0; position:relative; min-height:1.2em;}\n"
+        "    .docx-tab{display:inline-block;width:48px;}\n"
+        "    .docx-tab-leader{position:absolute; height:0; pointer-events:none;}\n"
+        "    .docx-tab-segment{white-space:nowrap;}\n"
+        "    .docx-page-number,.docx-num-pages,.docx-page-ref{display:inline-block;min-width:1.2em;padding:0 2px;background:#eef2ff;border:1px dashed #a5b4fc;border-radius:3px;font-size:0.85em;color:#4f46e5;vertical-align:baseline;}\n"
+        "    .docx-page-number::after{content:\"[PAGE]\";}\n"
+        "    .docx-num-pages::after{content:\"[NUMPAGES]\";}\n"
+        "    .docx-page-ref::after{content:\"[PAGEREF]\";}\n"
         "    .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.32);z-index:15;}\n"
         "    @media (max-width:780px){.viewer-sidebar{position:fixed;left:0;top:0;bottom:0;z-index:20;width:280px;min-width:280px;max-width:280px;transform:translateX(-100%);transition:transform .22s ease;opacity:1;pointer-events:auto;border-right:1px solid #e5e7eb;}\n"
         "    .viewer.viewer--mobile-open .viewer-sidebar{transform:translateX(0);}\n"
@@ -806,6 +1068,58 @@ def _viewer_script() -> str:
         "      }\n"
         "      try{link.scrollIntoView({block:'nearest'});}catch(e){}\n"
         "    }\n"
+        "    var currentFocus=null;\n"
+        "    var exitBtn=document.getElementById('exit-focus');\n"
+        "    function showExit(on){ if(exitBtn) exitBtn.hidden=!on; }\n"
+        "    function clearFocus(){\n"
+        "      var bs=docMain.querySelectorAll('.docx-block');\n"
+        "      for(var i=0;i<bs.length;i++){ bs[i].classList.remove('is-hidden'); }\n"
+        "      var fs=docMain.querySelectorAll('.docx-float-wrap, .docx-para-float-wrap, img[data-anchor]');\n"
+        "      for(var i=0;i<fs.length;i++){ fs[i].classList.remove('is-hidden'); }\n"
+        "      showExit(false);\n"
+        "      currentFocus=null;\n"
+        "    }\n"
+        "    function focusHeading(id){\n"
+        "      if(!id) return;\n"
+        "      var link=linkById[id];\n"
+        "      if(!link) return;\n"
+        "      var level=parseInt(link.getAttribute('data-level')||'0',10)||1;\n"
+        "      var blocks=Array.prototype.slice.call(docMain.querySelectorAll('.docx-block'));\n"
+        "      var startIdx=-2;\n"
+        "      if(id===titleId){ startIdx=-1; }\n"
+        "      else { for(var i=0;i<blocks.length;i++){ if(blocks[i].getAttribute('data-heading-id')===id){ startIdx=i; break; } } }\n"
+        "      if(startIdx===-2) return;\n"
+        "      for(var i=0;i<blocks.length;i++){ blocks[i].classList.add('is-hidden'); }\n"
+        "      if(startIdx===-1){\n"
+        "        for(var i=0;i<blocks.length;i++){\n"
+        "          var l=parseInt(blocks[i].getAttribute('data-level')||'0',10);\n"
+        "          if(i>0 && l && l<=level) break;\n"
+        "          blocks[i].classList.remove('is-hidden');\n"
+        "        }\n"
+        "      } else {\n"
+        "        for(var i=startIdx;i<blocks.length;i++){\n"
+        "          var l=parseInt(blocks[i].getAttribute('data-level')||'0',10);\n"
+        "          if(i>startIdx && l && l<=level) break;\n"
+        "          blocks[i].classList.remove('is-hidden');\n"
+        "        }\n"
+        "      }\n"
+        "      var floats=docMain.querySelectorAll('.docx-float-wrap, .docx-para-float-wrap, img[data-anchor]');\n"
+        "      for(var f=0;f<floats.length;f++){\n"
+        "        var aStr=floats[f].getAttribute('data-anchor');\n"
+        "        var a=parseInt(aStr,10);\n"
+        "        if(aStr==='-1' || a===-1){\n"
+        "          if(startIdx===-1) floats[f].classList.remove('is-hidden');\n"
+        "          else floats[f].classList.add('is-hidden');\n"
+        "          continue;\n"
+        "        }\n"
+        "        if(isNaN(a) || a<0 || a>=blocks.length){ floats[f].classList.add('is-hidden'); continue; }\n"
+        "        if(blocks[a].classList.contains('is-hidden')) floats[f].classList.add('is-hidden');\n"
+        "        else floats[f].classList.remove('is-hidden');\n"
+        "      }\n"
+        "      showExit(true);\n"
+        "      docMain.scrollTop=0;\n"
+        "      currentFocus=id;\n"
+        "    }\n"
         "    document.addEventListener('click',function(e){\n"
         "      var a=e.target.closest('a.toc-link');\n"
         "      if(!a) return;\n"
@@ -815,13 +1129,9 @@ def _viewer_script() -> str:
         "      var target=document.getElementById(id);\n"
         "      if(!target) return;\n"
         "      e.preventDefault();\n"
-        "      if(id===titleId){\n"
-        "        docMain.scrollTo({top:0,behavior:'smooth'});\n"
-        "      } else {\n"
-        "        target.scrollIntoView({behavior:'smooth',block:'start'});\n"
-        "      }\n"
-        "      history.pushState(null,'',href);\n"
+        "      focusHeading(id);\n"
         "      setActive(id);\n"
+        "      history.pushState({focusId:id},'',href);\n"
         "      if(isMobile()) setSidebarOpen(false);\n"
         "    });\n"
         "    if(headings.length && 'IntersectionObserver' in window){\n"
@@ -836,7 +1146,7 @@ def _viewer_script() -> str:
         "      headings.forEach(function(h){observer.observe(h);});\n"
         "      docMain.addEventListener('scroll',function(){ if(docMain.scrollTop<24 && titleId) setActive(titleId); },{passive:true});\n"
         "      var hval=location.hash.slice(1);\n"
-        "      if(hval&&linkById[hval]) setActive(hval);\n"
+        "      if(hval&&linkById[hval]){ focusHeading(hval); setActive(hval); }\n"
         "      else if(titleId) setActive(titleId);\n"
         "    } else {\n"
         "      var onScroll=function(){\n"
@@ -849,7 +1159,88 @@ def _viewer_script() -> str:
         "      };\n"
         "      docMain.addEventListener('scroll',onScroll,{passive:true});\n"
         "      onScroll();\n"
+        "      var hv2=location.hash.slice(1);\n"
+        "      if(hv2&&linkById[hv2]){ focusHeading(hv2); setActive(hv2); }\n"
         "    }\n"
+        "    if(exitBtn){\n"
+        "      exitBtn.addEventListener('click',function(){\n"
+        "        clearFocus();\n"
+        "        history.pushState({focusId:null},'',location.pathname+location.search);\n"
+        "      });\n"
+        "    }\n"
+        "    window.addEventListener('popstate',function(e){\n"
+        "      var st=e.state;\n"
+        "      if(st && st.focusId){ focusHeading(st.focusId); setActive(st.focusId); }\n"
+        "      else { clearFocus(); }\n"
+        "    });\n"
+"    function layoutDecimalTabs(){\n"
+        "      document.querySelectorAll('.docx-tab-segment[data-val=\"decimal\"]').forEach(function(seg){\n"
+        "        var pos=parseInt(seg.getAttribute('data-pos'),10);\n"
+        "        if(isNaN(pos)) return;\n"
+        "        var text=seg.textContent||'';\n"
+        "        var dotIdx=text.indexOf('.');\n"
+        "        if(dotIdx===-1){\n"
+        "          seg.style.transform=\"translateX(-100%)\";\n"
+        "          return;\n"
+        "        }\n"
+        "        // Skip if already positioned\n"
+        "        if(seg.hasAttribute('data-decimal-offset')) return;\n"
+        "        try{\n"
+        "          // Temporarily place segment at initial tab position for measurement\n"
+        "          seg.style.left = pos + 'px';\n"
+        "          // Force layout\n"
+        "          seg.offsetWidth;\n"
+        "          \n"
+        "          var walker=document.createTreeWalker(seg, NodeFilter.SHOW_TEXT, null, false);\n"
+        "          var node, targetNode=null, localIdx=-1;\n"
+        "          while(node=walker.nextNode()){\n"
+        "            var t=node.textContent;\n"
+        "            var idx=t.indexOf('.');\n"
+        "            if(idx!==-1){ targetNode=node; localIdx=idx; break; }\n"
+        "          }\n"
+        "          if(!targetNode){ seg.style.transform=\"translateX(-100%)\"; return; }\n"
+        "          var range=document.createRange();\n"
+        "          range.setStart(targetNode, localIdx);\n"
+        "          range.setEnd(targetNode, localIdx+1);\n"
+        "          var rect=range.getBoundingClientRect();\n"
+        "          \n"
+        "          // Use segment's own rect as reference (more reliable for abs positioned)\n"
+        "          var segRect=seg.getBoundingClientRect();\n"
+        "          // decimalOffset within segment = dot position - segment left edge\n"
+        "          var decimalOffsetInSeg = rect.left - segRect.left;\n"
+        "          // New segment left = tabPos - decimalOffsetInSeg\n"
+        "          var newLeft = pos - decimalOffsetInSeg;\n"
+        "          seg.style.left = newLeft + 'px';\n"
+        "          seg.style.transform = 'none';\n"
+        "          seg.setAttribute('data-decimal-offset', decimalOffsetInSeg);\n"
+        "        }catch(e){ seg.style.transform=\"translateX(-100%)\"; }\n"
+        "      });\n"
+        "    }\n"
+        "    function layoutTabLeaders(){\n"
+        "      document.querySelectorAll('p').forEach(function(p){\n"
+        "        var leaders=p.querySelectorAll('.docx-tab-leader[data-pos]');\n"
+        "        if(!leaders.length) return;\n"
+        "        leaders.forEach(function(leader){\n"
+        "          var next=leader.nextElementSibling;\n"
+        "          while(next && !next.classList.contains('docx-tab-segment')) next=next.nextElementSibling;\n"
+        "          if(!next) return;\n"
+        "          var pRect=p.getBoundingClientRect();\n"
+        "          var prev=leader.previousElementSibling;\n"
+        "          while(prev && prev.classList.contains('docx-tab-leader')) prev=prev.previousElementSibling;\n"
+        "          var prevRect=null;\n"
+        "          if(prev && prev.classList.contains('docx-tab-segment')){ prevRect=prev.getBoundingClientRect(); }\n"
+        "          else { var range=document.createRange(); try{ range.selectNodeContents(p); var r=range.getBoundingClientRect(); prevRect={right: pRect.left, left: pRect.left}; if(r.width) prevRect=r; }catch(e){ prevRect={right:pRect.left}; } }\n"
+        "          var nextRect=next.getBoundingClientRect();\n"
+        "          var left=(prevRect?prevRect.right: pRect.left) - pRect.left;\n"
+        "          var right=nextRect.left - pRect.left;\n"
+        "          if(right>left){ leader.style.left=left+'px'; leader.style.width=(right-left)+'px'; leader.style.top='0.7em'; }\n"
+        "        });\n"
+        "      });\n"
+        "    }\n"
+        "    function layoutAllTabs(){ layoutDecimalTabs(); layoutTabLeaders(); }\n"
+        "    if(document.readyState==='complete') layoutAllTabs(); else window.addEventListener('load', layoutAllTabs);\n"
+        "    window.addEventListener('resize', layoutAllTabs);\n"
+        "    setTimeout(layoutAllTabs,100); setTimeout(layoutAllTabs,500);\n"
         "    window.__viewer={setSidebarOpen:setSidebarOpen,isSidebarOpen:isSidebarOpen,setActive:setActive};\n"
         "  })();\n"
         "  </script>\n"
@@ -858,7 +1249,8 @@ def _viewer_script() -> str:
 
 
 def render_html(blocks=None, title: str = "Converted Document", toc=None,
-                assets=None, page_layout=None, paragraphs=None, sections=None, even_headers=False) -> str:
+                assets=None, page_layout=None, paragraphs=None, sections=None, even_headers=False,
+                default_font_size_pt: float = 11.0) -> str:
     """Render a full HTML document from normalized blocks.
 
     `blocks` is a document-order list of Paragraph | Table. Heading detection
@@ -869,7 +1261,12 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
     `paragraphs` is a legacy alias for `blocks` (backward compat with tests
     that call render_html(paragraphs=...)).
     `sections` is an optional list of Section with header/footer variants.
+    `default_font_size_pt` is the document's effective default font size (from
+    docDefaults rPrDefault); it sets the .docx-content base so inherited runs
+    render at the correct size and inline run typography always wins.
     """
+    global DEFAULT_FONT_HALF_POINTS
+    DEFAULT_FONT_HALF_POINTS = int(round(default_font_size_pt * 2))
     if blocks is None:
         blocks = paragraphs if paragraphs is not None else []
     if page_layout is None:
@@ -899,23 +1296,42 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
             title_inner = html.escape(heading_text)
         title_bar = '<header class="viewer-title"><h1 id="%s" class="doc-title">%s</h1></header>' % (html.escape(first_h1.heading_id, quote=True), title_inner)
 
-    content_floats = []   # (container, img) with container == "content"
-    page_floats = []      # container == "page"
+    def _assign_float_anchor(imgs, anchor_idx):
+        for _c, im in imgs:
+            try:
+                im.anchor_paragraph_index = anchor_idx
+            except Exception:
+                pass
+    def _set_inline_anchors(para, anchor_idx):
+        for c in getattr(para, 'content', []) or []:
+            if isinstance(c, Image) and c.wrap_type == "anchor":
+                try:
+                    c.anchor_paragraph_index = anchor_idx
+                except Exception:
+                    pass
+
+    content_floats = []   # list of (img, anchor_idx)
+    page_floats = []      # list of (img, anchor_idx)
     block_html = []
+    dom_idx = 0
     idx = 0
     while idx < len(blocks):
         b = blocks[idx]
         if b is first_h1:
             _, _, externals = _render_paragraph_html(b, assets, page_layout)
+            _assign_float_anchor(externals, -1)
+            _set_inline_anchors(b, -1)
             for container, img in externals:
                 if container == "page":
-                    page_floats.append(img)
+                    page_floats.append((img, -1))
                 else:
-                    content_floats.append(img)
+                    content_floats.append((img, -1))
             idx += 1
             continue
         if isinstance(b, Table):
-            block_html.append(render_table(b, assets, page_layout))
+            cur_anchor = dom_idx
+            block_html.append(_wrap_block(render_table(b, assets, page_layout, table_anchor=cur_anchor)))
+            dom_idx += 1
             idx += 1
             continue
         if isinstance(b, Paragraph) and _is_list_item(b):
@@ -932,6 +1348,10 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
                     break
                 run.append(cur)
                 j += 1
+            # anchor for all floats inside this list block is the list's dom index
+            list_anchor = dom_idx
+            for item in run:
+                _set_inline_anchors(item, list_anchor)
             tag = "ul" if is_bullet else "ol"
             cls = "docx-bullet-list" if is_bullet else "docx-ordered-list"
             lis = []
@@ -949,11 +1369,12 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
                 if layout:
                     extra.append(layout)
                 style_attr = ' style="%s"' % ";".join(extra) if extra else ""
+                _assign_float_anchor(collected, list_anchor)
                 for container, img in collected:
                     if container == "page":
-                        page_floats.append(img)
+                        page_floats.append((img, list_anchor))
                     else:
-                        content_floats.append(img)
+                        content_floats.append((img, list_anchor))
                 if not inner.strip() and not style_attr:
                     li_inner = "<p></p>"
                 elif not inner.strip():
@@ -961,17 +1382,26 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
                 else:
                     li_inner = "<p%s>%s</p>" % (style_attr, inner) if style_attr else "<p>%s</p>" % inner
                 lis.append("<li>%s</li>" % li_inner)
-            block_html.append('<%s class="docx-list %s">%s</%s>' % (tag, cls, "".join(lis), tag))
+            block_html.append(_wrap_block('<%s class="docx-list %s">%s</%s>' % (tag, cls, "".join(lis), tag)))
+            dom_idx += 1
             idx = j
             continue
         if isinstance(b, Paragraph):
+            cur_anchor = dom_idx
+            _set_inline_anchors(b, cur_anchor)
             html_str, _n, externals = _render_paragraph_html(b, assets, page_layout)
-            block_html.append(html_str)
+            _assign_float_anchor(externals, cur_anchor)
+            if b.heading_level:
+                wrapped = _wrap_block(html_str, b.heading_id, max(1, min(b.heading_level, 6)))
+            else:
+                wrapped = _wrap_block(html_str)
+            block_html.append(wrapped)
+            dom_idx += 1
             for container, img in externals:
                 if container == "page":
-                    page_floats.append(img)
+                    page_floats.append((img, cur_anchor))
                 else:
-                    content_floats.append(img)
+                    content_floats.append((img, cur_anchor))
         idx += 1
 
     content_inner = "\n".join(block_html)
@@ -1005,10 +1435,17 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
            page_layout.content_width_px, page_layout.margin_left_px + 16,
            page_layout.content_height_px)
     )
+    def _float_wrap(img, anchor_idx):
+        inner = render_float_image(img, assets, page_layout)
+        return '<div class="docx-float-wrap" data-anchor="%d">%s</div>' % (int(anchor_idx), inner)
+
+    content_floats_html = "\n".join(_float_wrap(im, a) for im, a in content_floats)
+    page_floats_html = "\n".join(_float_wrap(im, a) for im, a in page_floats)
+
     content_block = '<div class="docx-content" style="%s">\n%s\n%s\n</div>' % (
         content_style,
         content_inner,
-        "\n".join(render_float_image(i, assets, page_layout) for i in content_floats),
+        content_floats_html,
     )
 
     page_inner = "\n".join([p for p in [header_block, content_block, footer_block] if p])
@@ -1017,7 +1454,7 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
     page_block = '<div class="docx-page" style="%s">\n%s\n%s\n</div>' % (
         page_style,
         page_inner,
-        "\n".join(render_float_image(i, assets, page_layout) for i in page_floats),
+        page_floats_html,
     )
 
     toc_tree_html = render_sidebar_toc(toc) if toc else ""
@@ -1041,6 +1478,8 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
         '  <button id="sidebar-toggle" class="sidebar-toggle-main" aria-expanded="true" aria-controls="viewer-sidebar" aria-label="Toggle outline">\n'
         '    <span aria-hidden="true">&#9776;</span> <span>Outline</span>\n'
         '  </button>\n'
+        '  <button id="exit-focus" class="sidebar-toggle-main" type="button" hidden>'
+        '&#8592; All document</button>\n'
         '</div>\n'
     )
     viewer_inner = (

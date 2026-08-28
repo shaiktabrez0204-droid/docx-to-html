@@ -23,6 +23,7 @@ from typing import Dict, List, Optional
 from core.model import (
     Run,
     Paragraph,
+    TabStop,
     Table,
     Row,
     Cell,
@@ -575,6 +576,14 @@ class OoxmlParser:
         for idx, sect in enumerate(sect_elements):
             sec = Section(index=idx)
             sec.title_pg = sect.find(w + "titlePg") is not None
+            pg_num = sect.find(w + "pgNumType")
+            if pg_num is not None:
+                fmt = pg_num.get(w + "fmt")
+                start = pg_num.get(w + "start")
+                if fmt:
+                    sec.pg_num_fmt = fmt
+                if start and start.lstrip("-").isdigit():
+                    sec.pg_num_start = int(start)
             for hr in sect.findall(w + "headerReference"):
                 r_id = hr.get(self._qn_ns(NS_R, "id"))
                 typ = hr.get(w + "type", "default")
@@ -756,6 +765,12 @@ class OoxmlParser:
                     v = sz.get(self._qn("val"))
                     if v and v.isdigit():
                         font_size = int(v)
+                else:
+                    sz_cs = rpr.find(self._qn("szCs"))
+                    if sz_cs is not None:
+                        v = sz_cs.get(self._qn("val"))
+                        if v and v.isdigit():
+                            font_size = int(v)
                 col = rpr.find(self._qn("color"))
                 if col is not None:
                     v = col.get(self._qn("val"))
@@ -784,8 +799,14 @@ class OoxmlParser:
         return styles
 
     def get_default_font(self) -> dict:
-        """Extract document default run properties from styles.xml."""
-        default = {"font_family": "Calibri", "font_size": 11, "font_color": "#000000"}
+        """Extract document default run properties from styles.xml.
+
+        Font size is returned in OOXML half-points (w:sz), consistent with the
+        rest of the pipeline (Run.font_size is half-points; the renderer divides
+        by 2 to obtain pt). The base default of 22 half-points == 11pt matches
+        Word's normal default and the existing test expectations.
+        """
+        default = {"font_family": "Calibri", "font_size": 22, "font_color": "#000000"}
         if not self._styles_xml:
             return default
 
@@ -809,7 +830,13 @@ class OoxmlParser:
         if sz is not None:
             val = sz.get(self._qn("val"))
             if val and val.isdigit():
-                default["font_size"] = int(val)  # already in half-points; treated as pt here
+                default["font_size"] = int(val)
+        else:
+            sz_cs = rpr_default.find(self._qn("szCs"))
+            if sz_cs is not None:
+                val = sz_cs.get(self._qn("val"))
+                if val and val.isdigit():
+                    default["font_size"] = int(val)
 
         color = rpr_default.find(self._qn("color"))
         if color is not None:
@@ -1122,6 +1149,7 @@ class OoxmlParser:
         line_spacing_rule = None
 
         ppr = p_elem.find(self._qn("pPr"))
+        tabs: List[TabStop] = []
         if ppr is not None:
             pstyle = ppr.find(self._qn("pStyle"))
             if pstyle is not None:
@@ -1172,14 +1200,93 @@ class OoxmlParser:
                 v = spacing.get(self._qn("lineRule"))
                 if v:
                     line_spacing_rule = v
+            tabs_el = ppr.find(self._qn("tabs"))
+            if tabs_el is not None:
+                for tab_el in tabs_el.findall(self._qn("tab")):
+                    val = tab_el.get(self._qn("val"))
+                    pos = tab_el.get(self._qn("pos"))
+                    leader = tab_el.get(self._qn("leader"))
+                    if val and pos and pos.lstrip("-").isdigit():
+                        tabs.append(TabStop(val=val, pos=int(pos), leader=leader))
 
         runs: List[Run] = []
         content = []  # ordered Run/Image mix, preserving in-paragraph position
+        field_stack = []  # stack of {code:str, type:Optional[str], has_separate:bool}
+        def _in_supported_result():
+            return bool(field_stack and field_stack[-1].get("type") in ("PAGE", "NUMPAGES", "PAGEREF") and field_stack[-1].get("has_separate"))
+        def _emit_field_placeholder(field_type, field_code):
+            ph = Run(text="", field_type=field_type, field_code=field_code)
+            runs.append(ph)
+            content.append(ph)
         # Walk direct children so a run's position relative to a drawing (and to
         # other runs) is preserved. w:hyperlink contains nested runs and is
         # handled recursively so its runs keep their order too.
         for child in p_elem:
+            if child.tag == self._qn("fldSimple"):
+                instr = child.get(self._qn("instr"), "") or ""
+                first = instr.strip().split()[0].upper() if instr.strip() else ""
+                if first in ("PAGE", "NUMPAGES", "PAGEREF"):
+                    _emit_field_placeholder(first, instr.strip())
+                    continue
+                else:
+                    for r_elem in child.findall(self._qn("r")):
+                        run = self._parse_run(r_elem)
+                        if run is not None and self._run_is_meaningful(run):
+                            runs.append(run)
+                            content.append(run)
+                        for img in self._extract_images_from_r(r_elem):
+                            content.append(img)
+                    continue
             if child.tag == self._qn("r"):
+                fld_char_el = child.find(self._qn("fldChar"))
+                instr_el = child.find(self._qn("instrText"))
+                # tab/br are direct children of w:r
+                has_tab = child.find(self._qn("tab")) is not None
+                has_br = child.find(self._qn("br")) is not None
+                if fld_char_el is not None:
+                    ftype = fld_char_el.get(self._qn("fldCharType"))
+                    if ftype == "begin":
+                        field_stack.append({"code": "", "type": None, "has_separate": False})
+                        continue
+                    elif ftype == "separate":
+                        if field_stack:
+                            top = field_stack[-1]
+                            top["has_separate"] = True
+                            code = top["code"].strip()
+                            first = code.split()[0].upper() if code else ""
+                            if first in ("PAGE", "NUMPAGES", "PAGEREF"):
+                                top["type"] = first
+                            else:
+                                field_stack.pop()
+                        continue
+                    elif ftype == "end":
+                        if field_stack:
+                            top = field_stack.pop()
+                            if top.get("type") in ("PAGE", "NUMPAGES", "PAGEREF"):
+                                _emit_field_placeholder(top["type"], top["code"].strip())
+                        continue
+                if instr_el is not None:
+                    txt = instr_el.text or ""
+                    if field_stack and not field_stack[-1].get("has_separate"):
+                        field_stack[-1]["code"] += txt + " "
+                    continue
+                if _in_supported_result():
+                    # field result runs like <w:t>xi</w:t> are suppressed; placeholder will be emitted at end
+                    continue
+                if has_tab:
+                    tab_run = Run(text="\t")
+                    runs.append(tab_run)
+                    content.append(tab_run)
+                    for img in self._extract_images_from_r(child):
+                        content.append(img)
+                    continue
+                if has_br:
+                    br_run = Run(text="\n")
+                    runs.append(br_run)
+                    content.append(br_run)
+                    for img in self._extract_images_from_r(child):
+                        content.append(img)
+                    continue
                 run = self._parse_run(child)
                 if run is not None and self._run_is_meaningful(run):
                     runs.append(run)
@@ -1198,6 +1305,7 @@ class OoxmlParser:
                         if rel is not None:
                             href = rel.get("Target")
                 for r_elem in child.iter(self._qn("r")):
+                    # hyperlink runs do not participate in field state (PAGE never inside hyperlink in practice)
                     run = self._parse_run(r_elem)
                     if run is not None and self._run_is_meaningful(run):
                         if href is not None:
@@ -1209,7 +1317,7 @@ class OoxmlParser:
 
         images = [c for c in content if isinstance(c, Image)]
 
-        has_layout = any(v is not None for v in [indent_left, indent_right, indent_first_line, indent_hanging, spacing_before, spacing_after, line_spacing])
+        has_layout = any(v is not None for v in [indent_left, indent_right, indent_first_line, indent_hanging, spacing_before, spacing_after, line_spacing]) or bool(tabs)
         # Keep paragraph if it carries content, non-default style, or layout
         if runs or images or style_name != "Normal" or has_layout or alignment != "left":
             return Paragraph(
@@ -1229,6 +1337,7 @@ class OoxmlParser:
                 spacing_after=spacing_after,
                 line_spacing=line_spacing,
                 line_spacing_rule=line_spacing_rule,
+                tabs=tabs,
             )
         return None
 
@@ -1243,11 +1352,13 @@ class OoxmlParser:
         """
         if run.text:
             return True
+        if getattr(run, "field_type", None):
+            return True
         if run.bold or run.italic or run.underline or run.superscript or run.subscript:
             return True
         if run.font_color is not None and run.font_color not in ("#000000", "000000"):
             return True
-        if run.font_size is not None and run.font_size != 11:
+        if run.font_size is not None and run.font_size != 22:
             return True
         if run.font_family is not None and run.font_family != "Calibri":
             return True
@@ -1305,6 +1416,16 @@ class OoxmlParser:
             val = sz.get(self._qn("val"))
             if val and val.isdigit():
                 run.font_size = int(val)
+        else:
+            # Complex-script fallback: OOXML applies w:sz to Latin/ASCII runs and
+            # w:szCs to complex-script runs. When w:sz is absent we fall back to
+            # w:szCs rather than blindly replacing it, preserving the correct
+            # precedence (w:sz wins when both are present).
+            sz_cs = rpr.find(self._qn("szCs"))
+            if sz_cs is not None:
+                val = sz_cs.get(self._qn("val"))
+                if val and val.isdigit():
+                    run.font_size = int(val)
 
         va = rpr.find(self._qn("vertAlign"))
         if va is not None:

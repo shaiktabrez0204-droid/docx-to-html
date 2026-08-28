@@ -5,7 +5,7 @@ style/classifier/hierarchy/toc layers, and the HTML renderer together. The
 renderer and parser stay unaware of each other's concerns.
 """
 
-from typing import List
+from typing import List, Optional
 from adapter.ooxml_parser import OoxmlParser
 from semantic.style_resolver import StyleRegistry, ResolvedStyle
 from semantic.classifier import classify_paragraphs as classify_headings
@@ -73,36 +73,99 @@ def _apply_run_style(run: Run, rs: ResolvedStyle) -> None:
         run.subscript = rs.subscript
 
 
-def classify_paragraphs(paragraphs: List[Paragraph], registry: StyleRegistry) -> None:
+def _apply_run_resolution(para: Paragraph, registry: StyleRegistry,
+                          doc_defaults: Optional[ResolvedStyle]) -> None:
+    """Resolve run-level (character) typography for a single paragraph.
+
+    ``_apply_run_style`` only fills ``None`` fields, so the FIRST layer applied
+    to a run wins. Effective precedence (highest -> lowest) is therefore applied
+    in this order, with the direct run rPr already set on the Run during parsing
+    (so it wins over everything below):
+
+       1. direct run rPr                 (already on Run, highest priority)
+       2. character style (w:rStyle)     (applied first here)
+       3. paragraph style run properties (applied next)
+       4. docDefaults (rPrDefault)       (applied last, lowest priority)
+
+    The paragraph style's run properties are applied to ALL runs -- including
+    those that carry a character style -- so inherited paragraph formatting is
+    not lost for char-styled runs; the character style is layered on top.
+    """
+    rs = registry.resolve(para.style_name) if para.style_name else None
+    if rs is not None:
+        _apply_para_style(para, rs)
+
+    # 1. character style (higher priority than paragraph style)
+    for r in para.runs:
+        if r.style_name:
+            rs_run = registry.resolve(r.style_name)
+            if rs_run is not None:
+                _apply_run_style(r, rs_run)
+
+    # 2. paragraph style run properties (applies to every run in the paragraph)
+    if rs is not None:
+        for r in para.runs:
+            _apply_run_style(r, rs)
+
+    # 3. docDefaults -- always the base layer, applied last so it only fills
+    #    runs that no higher-priority layer touched.
+    if doc_defaults is not None:
+        for r in para.runs:
+            _apply_run_style(r, doc_defaults)
+
+
+def classify_paragraphs(paragraphs: List[Paragraph], registry: StyleRegistry,
+                        doc_defaults: Optional[ResolvedStyle] = None) -> None:
     """Replace each paragraph's style defaults with resolved style properties.
 
     For each paragraph, look up its w:paraStyle (or w:pStyle) resolved style and
     overwrite None-valued attributes so that BasedOn inheritance flows through.
-    Also apply resolved run styles for any runs inside the paragraph.
+    Also apply resolved run styles for any runs inside the paragraph. Heading
+    classification runs last, using the resolved style metadata.
     """
     for para in paragraphs:
-        # Find the paragraph style reference from the paragraph's own w:pPr/w:pStyle
-        # (this is set up when the paragraph was parsed from OOXML).
-        # The simplest path: the para may have its effective style stored.
-        # If not, try to resolve from the style name that appears in the
-        # paragraph-level tag.  For now, we use a registry lookup by style_id.
-        # The para.style_name was set during parsing as w:pStyle/@w:val.
-        rs = registry.resolve(para.style_name) if para.style_name else None
-        if rs is not None:
-            _apply_para_style(para, rs)
-            # Apply paragraph style's run properties to all runs (for inheritance)
-            for r in para.runs:
-                if r.style_name is None:
-                    _apply_run_style(r, rs)
-        # Apply run-level style overrides (character style takes precedence)
-        for r in para.runs:
-            if r.style_name:
-                rs_run = registry.resolve(r.style_name)
-                if rs_run is not None:
-                    _apply_run_style(r, rs_run)
+        _apply_run_resolution(para, registry, doc_defaults)
 
     # Heading classification (uses resolved style metadata)
     classify_headings(paragraphs, registry)
+
+
+def _build_doc_defaults(parser) -> ResolvedStyle:
+    """Build a ResolvedStyle carrying the document's rPrDefault run props."""
+    dd = parser.get_default_font()
+    return ResolvedStyle(
+        style_id="__docDefaults__",
+        font_family=dd.get("font_family"),
+        font_size=dd.get("font_size"),
+        font_color=dd.get("font_color"),
+    )
+
+
+def _apply_run_resolution_to_blocks(blocks, registry: StyleRegistry,
+                                    doc_defaults: ResolvedStyle) -> None:
+    """Apply run resolution to paragraphs nested inside tables."""
+    for b in blocks:
+        if isinstance(b, Table):
+            for row in b.rows:
+                for cell in row.cells:
+                    for p in cell.content:
+                        _apply_run_resolution(p, registry, doc_defaults)
+
+
+def _apply_run_resolution_to_sections(sections, registry: StyleRegistry,
+                                      doc_defaults: ResolvedStyle) -> None:
+    """Apply run resolution to paragraphs inside header/footer parts."""
+    for section in sections:
+        for hf_map in (section.headers, section.footers):
+            for hf in hf_map.values():
+                for blk in hf.blocks:
+                    if isinstance(blk, Paragraph):
+                        _apply_run_resolution(blk, registry, doc_defaults)
+                    elif isinstance(blk, Table):
+                        for row in blk.rows:
+                            for cell in row.cells:
+                                for p in cell.content:
+                                    _apply_run_resolution(p, registry, doc_defaults)
 
 
 class ConversionResult:
@@ -140,8 +203,12 @@ def convert_docx(docx_path: str, title: str = "Converted Document") -> Conversio
     # Pass 1: resolve all style metadata (incl. BasedOn inheritance).
     registry = StyleRegistry(parser.get_styles())
 
+    # Document default run properties (rPrDefault) are the lowest-priority layer
+    # for font size / family / color resolution.
+    doc_defaults = _build_doc_defaults(parser)
+
     # Pass 2: classify each paragraph from resolved metadata (authoritative).
-    classify_paragraphs(paragraphs, registry)
+    classify_paragraphs(paragraphs, registry, doc_defaults)
 
     numbering_model = parser.get_numbering()
     resolver = NumberingResolver(numbering_model)
@@ -160,9 +227,18 @@ def convert_docx(docx_path: str, title: str = "Converted Document") -> Conversio
     sections = parser.get_sections()
     even_headers = parser.get_even_headers_flag()
     page_layout = parser.get_page_layout()
+
+    # Inherited run typography (docDefaults + styles) must also reach runs that
+    # live inside tables and inside header/footer parts, not just top-level body
+    # paragraphs.
+    _apply_run_resolution_to_blocks(blocks, registry, doc_defaults)
+    _apply_run_resolution_to_sections(sections, registry, doc_defaults)
+
+    default_font_size_pt = (doc_defaults.font_size or 22) / 2.0
     html = render_html(blocks, title=title, toc=toc,
                        assets=parser.get_image_assets(), page_layout=page_layout,
-                       sections=sections, even_headers=even_headers)
+                       sections=sections, even_headers=even_headers,
+                       default_font_size_pt=default_font_size_pt)
     return ConversionResult(
         paragraphs, registry, hierarchy, toc, html,
         image_assets=parser.get_image_assets(),

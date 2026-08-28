@@ -53,31 +53,44 @@ def associate_floating_images(paragraphs: List[Paragraph]) -> List[Paragraph]:
             p.block_id = "blk-%d" % i
 
     last_nonempty_id: Optional[str] = None
+    last_nonempty_idx: Optional[int] = None
+    def _para_text(para: Paragraph) -> str:
+        parts = []
+        for r in getattr(para, 'runs', []):
+            if getattr(r, 'text', None):
+                parts.append(r.text)
+        return "".join(parts)[:120]
     for i, p in enumerate(paragraphs):
         has_text = _paragraph_has_text(p)
         if has_text:
             last_nonempty_id = p.block_id
+            last_nonempty_idx = i
 
         for c in p.content:
             if not (isinstance(c, Image) and c.wrap_type == "anchor"):
                 continue
-            # The containing paragraph is the structural anchor context.
             if has_text:
                 c.nearest_block_id = p.block_id
                 c.nearest_block_confidence = 0.95
+                c.anchor_paragraph_index = i
+                c.anchor_paragraph_text = _para_text(p)
                 continue
 
-            # Anchor in an empty paragraph: associate with nearest non-empty
-            # block (prefer the preceding one, then look ahead). Low confidence
-            # by design - we do NOT invent a precise relationship.
             target_id = last_nonempty_id
+            target_idx = last_nonempty_idx
             if target_id is None:
                 for j in range(i + 1, len(paragraphs)):
                     if _paragraph_has_text(paragraphs[j]):
                         target_id = paragraphs[j].block_id
+                        target_idx = j
                         break
             c.nearest_block_id = target_id
             c.nearest_block_confidence = 0.6 if target_id else 0.3
+            c.anchor_paragraph_index = target_idx
+            if target_idx is not None:
+                c.anchor_paragraph_text = _para_text(paragraphs[target_idx])
+            else:
+                c.anchor_paragraph_text = None
 
     return paragraphs
 

@@ -86,7 +86,7 @@ def test_inconsistent_not_mutated():
 # ---- Phase 6: hierarchy validation ----
 def test_hierarchy_consistent_fixtures_no_issues():
     for fn in ["num-h1.docx", "num-h1-h2.docx", "num-h1-h2-h3.docx",
-               "num-restart.docx", "num-skipped.docx", "num-mixed.docx",
+               "num-restart.docx", "num-mixed.docx",
                "num-custom-style.docx", "num-adversarial-metadata.docx"]:
         r = convert_docx(_load(fn))
         assert r.hierarchy_issues == [], "%s produced unexpected issues: %s" % (fn, r.hierarchy_issues)

@@ -40,9 +40,21 @@
     .sidebar-toggle-main:focus-visible{outline:2px solid #2563eb;outline-offset:2px;}
     .docx-page{background:#fff;margin:16px auto 40px;box-shadow:0 1px 6px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);width:100%;max-width:860px;position:relative;flex-shrink:0;box-sizing:border-box;}
     .docx-page[style]{max-width:min(860px,calc(100% - 32px)) !important;}
-    .docx-content{box-sizing:border-box;max-width:100%;overflow-wrap:break-word;}
+    .docx-block.is-hidden{display:none !important;}
+    .docx-float-wrap.is-hidden{display:none !important;}
+    .docx-float-wrap{position:static;}
+    .docx-para-float-wrap.is-hidden{display:none !important;}
+    .docx-para-float-wrap{position:static;}
+    img[data-anchor].is-hidden{display:none !important;}
+    img.docx-float.is-hidden, img.docx-float-wrapped.is-hidden{display:none !important;}
+    .docx-hf-float-wrap{position:static;}
+    #exit-focus{margin-left:8px;}
+    button.sidebar-toggle-main[hidden]{display:none !important;}
+    .docx-content{box-sizing:border-box;max-width:100%;overflow-wrap:break-word;font-size:11.0pt;}
     img.docx-float{position:absolute;}
     img.docx-float-wrapped{position:static;max-width:none;}
+    img.docx-float-topbottom{display:block; clear:both; float:none; max-width:100%; margin-left:auto; margin-right:auto;}
+    img.docx-float-topbottom.is-hidden{display:none !important;}
     .docx-number{font:inherit;font-weight:inherit;font-style:inherit;margin-right:.4em;white-space:nowrap;}
     .docx-bullet{margin-right:.4em;}
     nav.toc .docx-number{margin-right:.4em;}
@@ -55,7 +67,14 @@
     table.docx-table td,table.docx-table th{border:1px solid #999;padding:6px 8px;vertical-align:top;word-wrap:break-word;}
     table.docx-table td p{margin:0;}
     header.docx-header,footer.docx-footer{border:1px dashed #bbb;padding:6px 8px;margin:6px 0;background:#fafafa;}
-    header.docx-header p,footer.docx-footer p{margin:0;}
+    header.docx-header p,footer.docx-footer p{margin:0; position:relative; min-height:1.2em;}
+    .docx-tab{display:inline-block;width:48px;}
+    .docx-tab-leader{position:absolute; height:0; pointer-events:none;}
+    .docx-tab-segment{white-space:nowrap;}
+    .docx-page-number,.docx-num-pages,.docx-page-ref{display:inline-block;min-width:1.2em;padding:0 2px;background:#eef2ff;border:1px dashed #a5b4fc;border-radius:3px;font-size:0.85em;color:#4f46e5;vertical-align:baseline;}
+    .docx-page-number::after{content:"[PAGE]";}
+    .docx-num-pages::after{content:"[NUMPAGES]";}
+    .docx-page-ref::after{content:"[PAGEREF]";}
     .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.32);z-index:15;}
     @media (max-width:780px){.viewer-sidebar{position:fixed;left:0;top:0;bottom:0;z-index:20;width:280px;min-width:280px;max-width:280px;transform:translateX(-100%);transition:transform .22s ease;opacity:1;pointer-events:auto;border-right:1px solid #e5e7eb;}
     .viewer.viewer--mobile-open .viewer-sidebar{transform:translateX(0);}
@@ -82,14 +101,15 @@
   <button id="sidebar-toggle" class="sidebar-toggle-main" aria-expanded="true" aria-controls="viewer-sidebar" aria-label="Toggle outline">
     <span aria-hidden="true">&#9776;</span> <span>Outline</span>
   </button>
+  <button id="exit-focus" class="sidebar-toggle-main" type="button" hidden>&#8592; All document</button>
 </div>
 <div class="docx-page" style="position: relative; width: 816px; max-width: calc(100% - 32px); min-height: 1056px; box-sizing: border-box;">
 <div class="docx-content" style="position: relative; margin-left: 96px; margin-top: 96px; width: 624px; max-width: calc(100% - 112px); min-height: 864px; box-sizing: border-box;">
-<p>Anchor with zero extent.</p>
-<p></p>
+<div class="docx-block"><p>Anchor with zero extent.</p></div>
+<div class="docx-block"><p></p></div>
 
 </div>
-<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASwAAADICAIAAADdvUsCAAACRklEQVR4nO3VMREAMAwDsbRAwh9KYRXGLxIBT38+b3eAzg23ARFCzxNCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEcK0Pt2nApS1YSR7AAAAAElFTkSuQmCC" class="docx-float" style="z-index: 2; position: absolute; left: 52px; top: 52px" >
+<div class="docx-float-wrap" data-anchor="1"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASwAAADICAIAAADdvUsCAAACRklEQVR4nO3VMREAMAwDsbRAwh9KYRXGLxIBT38+b3eAzg23ARFCzxNCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEUJMhBATIcRECDERQkyEEBMhxEQIMRFCTIQQEyHERAgxEcK0Pt2nApS1YSR7AAAAAElFTkSuQmCC" class="docx-float" style="z-index: 2; position: absolute; left: 52px; top: 52px" ></div>
 </div>
 </main>
 </div>
@@ -171,6 +191,58 @@
       }
       try{link.scrollIntoView({block:'nearest'});}catch(e){}
     }
+    var currentFocus=null;
+    var exitBtn=document.getElementById('exit-focus');
+    function showExit(on){ if(exitBtn) exitBtn.hidden=!on; }
+    function clearFocus(){
+      var bs=docMain.querySelectorAll('.docx-block');
+      for(var i=0;i<bs.length;i++){ bs[i].classList.remove('is-hidden'); }
+      var fs=docMain.querySelectorAll('.docx-float-wrap, .docx-para-float-wrap, img[data-anchor]');
+      for(var i=0;i<fs.length;i++){ fs[i].classList.remove('is-hidden'); }
+      showExit(false);
+      currentFocus=null;
+    }
+    function focusHeading(id){
+      if(!id) return;
+      var link=linkById[id];
+      if(!link) return;
+      var level=parseInt(link.getAttribute('data-level')||'0',10)||1;
+      var blocks=Array.prototype.slice.call(docMain.querySelectorAll('.docx-block'));
+      var startIdx=-2;
+      if(id===titleId){ startIdx=-1; }
+      else { for(var i=0;i<blocks.length;i++){ if(blocks[i].getAttribute('data-heading-id')===id){ startIdx=i; break; } } }
+      if(startIdx===-2) return;
+      for(var i=0;i<blocks.length;i++){ blocks[i].classList.add('is-hidden'); }
+      if(startIdx===-1){
+        for(var i=0;i<blocks.length;i++){
+          var l=parseInt(blocks[i].getAttribute('data-level')||'0',10);
+          if(i>0 && l && l<=level) break;
+          blocks[i].classList.remove('is-hidden');
+        }
+      } else {
+        for(var i=startIdx;i<blocks.length;i++){
+          var l=parseInt(blocks[i].getAttribute('data-level')||'0',10);
+          if(i>startIdx && l && l<=level) break;
+          blocks[i].classList.remove('is-hidden');
+        }
+      }
+      var floats=docMain.querySelectorAll('.docx-float-wrap, .docx-para-float-wrap, img[data-anchor]');
+      for(var f=0;f<floats.length;f++){
+        var aStr=floats[f].getAttribute('data-anchor');
+        var a=parseInt(aStr,10);
+        if(aStr==='-1' || a===-1){
+          if(startIdx===-1) floats[f].classList.remove('is-hidden');
+          else floats[f].classList.add('is-hidden');
+          continue;
+        }
+        if(isNaN(a) || a<0 || a>=blocks.length){ floats[f].classList.add('is-hidden'); continue; }
+        if(blocks[a].classList.contains('is-hidden')) floats[f].classList.add('is-hidden');
+        else floats[f].classList.remove('is-hidden');
+      }
+      showExit(true);
+      docMain.scrollTop=0;
+      currentFocus=id;
+    }
     document.addEventListener('click',function(e){
       var a=e.target.closest('a.toc-link');
       if(!a) return;
@@ -180,13 +252,9 @@
       var target=document.getElementById(id);
       if(!target) return;
       e.preventDefault();
-      if(id===titleId){
-        docMain.scrollTo({top:0,behavior:'smooth'});
-      } else {
-        target.scrollIntoView({behavior:'smooth',block:'start'});
-      }
-      history.pushState(null,'',href);
+      focusHeading(id);
       setActive(id);
+      history.pushState({focusId:id},'',href);
       if(isMobile()) setSidebarOpen(false);
     });
     if(headings.length && 'IntersectionObserver' in window){
@@ -201,7 +269,7 @@
       headings.forEach(function(h){observer.observe(h);});
       docMain.addEventListener('scroll',function(){ if(docMain.scrollTop<24 && titleId) setActive(titleId); },{passive:true});
       var hval=location.hash.slice(1);
-      if(hval&&linkById[hval]) setActive(hval);
+      if(hval&&linkById[hval]){ focusHeading(hval); setActive(hval); }
       else if(titleId) setActive(titleId);
     } else {
       var onScroll=function(){
@@ -214,7 +282,88 @@
       };
       docMain.addEventListener('scroll',onScroll,{passive:true});
       onScroll();
+      var hv2=location.hash.slice(1);
+      if(hv2&&linkById[hv2]){ focusHeading(hv2); setActive(hv2); }
     }
+    if(exitBtn){
+      exitBtn.addEventListener('click',function(){
+        clearFocus();
+        history.pushState({focusId:null},'',location.pathname+location.search);
+      });
+    }
+    window.addEventListener('popstate',function(e){
+      var st=e.state;
+      if(st && st.focusId){ focusHeading(st.focusId); setActive(st.focusId); }
+      else { clearFocus(); }
+    });
+    function layoutDecimalTabs(){
+      document.querySelectorAll('.docx-tab-segment[data-val="decimal"]').forEach(function(seg){
+        var pos=parseInt(seg.getAttribute('data-pos'),10);
+        if(isNaN(pos)) return;
+        var text=seg.textContent||'';
+        var dotIdx=text.indexOf('.');
+        if(dotIdx===-1){
+          seg.style.transform="translateX(-100%)";
+          return;
+        }
+        // Skip if already positioned
+        if(seg.hasAttribute('data-decimal-offset')) return;
+        try{
+          // Temporarily place segment at initial tab position for measurement
+          seg.style.left = pos + 'px';
+          // Force layout
+          seg.offsetWidth;
+          
+          var walker=document.createTreeWalker(seg, NodeFilter.SHOW_TEXT, null, false);
+          var node, targetNode=null, localIdx=-1;
+          while(node=walker.nextNode()){
+            var t=node.textContent;
+            var idx=t.indexOf('.');
+            if(idx!==-1){ targetNode=node; localIdx=idx; break; }
+          }
+          if(!targetNode){ seg.style.transform="translateX(-100%)"; return; }
+          var range=document.createRange();
+          range.setStart(targetNode, localIdx);
+          range.setEnd(targetNode, localIdx+1);
+          var rect=range.getBoundingClientRect();
+          
+          // Use segment's own rect as reference (more reliable for abs positioned)
+          var segRect=seg.getBoundingClientRect();
+          // decimalOffset within segment = dot position - segment left edge
+          var decimalOffsetInSeg = rect.left - segRect.left;
+          // New segment left = tabPos - decimalOffsetInSeg
+          var newLeft = pos - decimalOffsetInSeg;
+          seg.style.left = newLeft + 'px';
+          seg.style.transform = 'none';
+          seg.setAttribute('data-decimal-offset', decimalOffsetInSeg);
+        }catch(e){ seg.style.transform="translateX(-100%)"; }
+      });
+    }
+    function layoutTabLeaders(){
+      document.querySelectorAll('p').forEach(function(p){
+        var leaders=p.querySelectorAll('.docx-tab-leader[data-pos]');
+        if(!leaders.length) return;
+        leaders.forEach(function(leader){
+          var next=leader.nextElementSibling;
+          while(next && !next.classList.contains('docx-tab-segment')) next=next.nextElementSibling;
+          if(!next) return;
+          var pRect=p.getBoundingClientRect();
+          var prev=leader.previousElementSibling;
+          while(prev && prev.classList.contains('docx-tab-leader')) prev=prev.previousElementSibling;
+          var prevRect=null;
+          if(prev && prev.classList.contains('docx-tab-segment')){ prevRect=prev.getBoundingClientRect(); }
+          else { var range=document.createRange(); try{ range.selectNodeContents(p); var r=range.getBoundingClientRect(); prevRect={right: pRect.left, left: pRect.left}; if(r.width) prevRect=r; }catch(e){ prevRect={right:pRect.left}; } }
+          var nextRect=next.getBoundingClientRect();
+          var left=(prevRect?prevRect.right: pRect.left) - pRect.left;
+          var right=nextRect.left - pRect.left;
+          if(right>left){ leader.style.left=left+'px'; leader.style.width=(right-left)+'px'; leader.style.top='0.7em'; }
+        });
+      });
+    }
+    function layoutAllTabs(){ layoutDecimalTabs(); layoutTabLeaders(); }
+    if(document.readyState==='complete') layoutAllTabs(); else window.addEventListener('load', layoutAllTabs);
+    window.addEventListener('resize', layoutAllTabs);
+    setTimeout(layoutAllTabs,100); setTimeout(layoutAllTabs,500);
     window.__viewer={setSidebarOpen:setSidebarOpen,isSidebarOpen:isSidebarOpen,setActive:setActive};
   })();
   </script>

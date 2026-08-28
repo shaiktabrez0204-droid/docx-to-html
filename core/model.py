@@ -28,13 +28,25 @@ class Run:
     italic: Optional[bool] = None
     underline: Optional[str] = None          # None = none, otherwise the w:u/@w:val (e.g. "single")
     font_family: Optional[str] = None
-    font_size: Optional[int] = None          # points
+    font_size: Optional[int] = None          # half-points (OOXML w:sz); renderer divides by 2 for pt
     font_color: Optional[str] = None         # hex, e.g. "0000FF" or "#000000"
     superscript: Optional[bool] = None
     subscript: Optional[bool] = None
     href: Optional[str] = None   # hyperlink target (external URL or #anchor) if this run is inside w:hyperlink
     style_name: Optional[str] = None  # w:rStyle/@w:val if this run uses a character style
+    # Field semantics: when this run represents a PAGE/NUMPAGES/PAGEREF field placeholder,
+    # field_type is the normalized first token (PAGE/NUMPAGES/PAGEREF) and field_code is
+    # the raw instrText (e.g. 'PAGE \\* MERGEFORMAT'). Normal text has None.
+    field_type: Optional[str] = None
+    field_code: Optional[str] = None
 
+
+@dataclass
+class TabStop:
+    """Word tab stop from w:pPr/w:tabs/w:tab."""
+    val: str  # left, center, right, decimal, clear, etc.
+    pos: int  # twips (1/20 pt)
+    leader: Optional[str] = None  # none, dot, hyphen, underscore, heavy, middleDot
 
 @dataclass
 class Paragraph:
@@ -79,6 +91,8 @@ class Paragraph:
     # present; when empty (e.g. test-built paragraphs), it falls back to `runs`.
     # This single field is the source of truth for in-paragraph ordering.
     content: List[Union["Run", "Image"]] = field(default_factory=list)
+    # Word tab stops from w:pPr/w:tabs (preserved verbatim for renderer)
+    tabs: List["TabStop"] = field(default_factory=list)
     # Stable block id assigned by the anchoring pass (core/anchoring.py) so
     # floating images can reference their nearest containing block. None until
     # the anchoring pass runs; never set by the OOXML parser.
@@ -178,6 +192,8 @@ class Section:
     headers: Dict[str, HeaderFooter] = field(default_factory=dict)  # type -> HeaderFooter
     footers: Dict[str, HeaderFooter] = field(default_factory=dict)
     page_layout: Optional["PageLayout"] = None
+    pg_num_fmt: Optional[str] = None   # w:pgNumType/@w:fmt (e.g. lowerRoman, decimal, upperRoman)
+    pg_num_start: Optional[int] = None # w:pgNumType/@w:start (1-based)
 
     def get_header(self, variant: str = "default") -> Optional[HeaderFooter]:
         return self.headers.get(variant)
@@ -400,7 +416,6 @@ def format_numbering_label(
         return None
 
     formats = list(level_formats) if level_formats else ["decimal"] * len(path)
-    # Pad defensively if a level format was missing.
     if len(formats) < len(path):
         formats = formats + ["decimal"] * (len(path) - len(formats))
 
@@ -410,7 +425,15 @@ def format_numbering_label(
             return ""
         return _format_number_component(formats[idx], path[idx])
 
-    return re.sub(r"%(\d)", _replace, lvl_text)
+    raw = re.sub(r"%(\d)", _replace, lvl_text)
+    raw = re.sub(r"\.+", ".", raw)
+    raw = raw.lstrip(" .")
+    placeholder_count = len(re.findall(r"%\d", lvl_text))
+    if len(path) < placeholder_count:
+        raw = raw.rstrip(" .")
+    else:
+        raw = raw.strip()
+    return raw if raw else None
 
 
 @dataclass
@@ -422,7 +445,7 @@ class Style:
     """
     name: str = "Normal"
     font_family: Optional[str] = None
-    font_size: Optional[int] = None      # points
+    font_size: Optional[int] = None      # half-points (OOXML w:sz); renderer divides by 2 for pt
     bold: Optional[bool] = None
     italic: Optional[bool] = None
     underline: Optional[str] = None      # e.g. "single", "double"
