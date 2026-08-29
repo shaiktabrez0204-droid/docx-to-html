@@ -18,7 +18,7 @@ import os
 import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from core.model import (
     Run,
@@ -382,6 +382,12 @@ class OoxmlParser:
                 dist[key] = int(v)
         fields["wrap_distances"] = dist or None
 
+        # Parse wrapPolygon from the wrap element (wrapTight/wrapThrough).
+        # Coordinates are in the OOXML normalized 21600x21600 space.
+        wrap_polygon = self._parse_wrap_polygon(anchor_elem)
+        if wrap_polygon:
+            fields["wrap_polygon"] = wrap_polygon
+
         # wp:anchor/@behindDoc: "1" => image behind text (drives z-index in the
         # renderer without inventing an arbitrary stacking order).
         bd = anchor_elem.get("behindDoc")
@@ -389,6 +395,57 @@ class OoxmlParser:
             fields["behind_doc"] = (bd == "1")
 
         return fields
+
+    def _parse_wrap_polygon(self, anchor_elem: ET.Element) -> Optional[List[Tuple[int, int]]]:
+        """Extract wrap polygon points from wp:wrapTight/wp:wrapThrough/wp:wrapSquare.
+
+        Returns a list of (x, y) tuples in the OOXML 21600x21600 coordinate space,
+        or None if no valid polygon is found.
+        """
+        wp = NS_WP
+        wrap_el = None
+        for el_name in _WRAP_ELEMENT_TO_MODE.keys():
+            wrap_el = anchor_elem.find("{%s}%s" % (wp, el_name))
+            if wrap_el is not None:
+                break
+        if wrap_el is None:
+            return None
+
+        poly_el = wrap_el.find("{%s}wrapPolygon" % wp)
+        if poly_el is None:
+            return None
+
+        points: List[Tuple[int, int]] = []
+
+        def _parse_coord(el: ET.Element) -> Optional[Tuple[int, int]]:
+            x_attr = el.get("x")
+            y_attr = el.get("y")
+            if x_attr is None or y_attr is None:
+                return None
+            if not x_attr.lstrip("-").isdigit() or not y_attr.lstrip("-").isdigit():
+                return None
+            return (int(x_attr), int(y_attr))
+
+        start_el = poly_el.find("{%s}start" % wp)
+        if start_el is not None:
+            pt = _parse_coord(start_el)
+            if pt is not None:
+                points.append(pt)
+
+        for line_el in poly_el.findall("{%s}lineTo" % wp):
+            pt = _parse_coord(line_el)
+            if pt is not None:
+                points.append(pt)
+
+        # A valid polygon needs at least 3 points.
+        if len(points) < 3:
+            return None
+
+        # Close the polygon if not already closed (first == last).
+        if points[0] != points[-1]:
+            points.append(points[0])
+
+        return points
 
     def _extract_images_from_r(self, r_elem: ET.Element) -> List[Image]:
         """Extract image placements from a w:r that contains a w:drawing."""

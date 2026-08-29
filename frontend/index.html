@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DOCX to HTML — Convert. Preserve. Perfect.</title>
+  <meta name="description" content="Convert DOCX to clean, semantic HTML. Preserve formatting, images, tables and layout.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/frontend/styles.css">
+  <style>@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important;}}</style>
+</head>
+<body>
+  <header class="header" role="banner">
+    <div class="header-inner">
+      <div class="brand">
+        <div class="brand-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M10 13H8"/><path d="M16 17H8"/><path d="M13 13h3"/></svg></div>
+        <div class="brand-text">
+          <div class="brand-title"><span>DOCX</span><span class="arrow">→</span><span>HTML</span></div>
+          <div class="brand-sub">Convert. Preserve. Perfect.</div>
+        </div>
+      </div>
+      <div class="header-meta" aria-label="Features">
+        <span><i class="dot" aria-hidden="true"></i><span class="label">Secure</span></span>
+        <span><i class="dot fast" aria-hidden="true"></i><span class="label">Fast</span></span>
+        <span><i class="dot acc" aria-hidden="true"></i><span class="label">Free</span></span>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell" role="main">
+    <div class="hero-grid">
+      <section class="left" aria-label="Introduction">
+        <div class="eyebrow"><i></i> DOCX → HTML Converter</div>
+        <h1 class="headline">Convert your <span class="grad-docs">DOCX</span> into <span class="grad-html">clean HTML</span></h1>
+        <div class="security" role="note">
+          <span class="lock" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1.2" fill="currentColor"/></svg></span>
+          <span><b>Your files are never stored.</b><br>All conversions are processed securely and removed after conversion.</span>
+        </div>
+      </section>
+
+      <section class="card-wrap" aria-label="Upload">
+        <div class="card" id="card">
+          <div class="card-head" id="cardHead">
+            <div class="step-label">Step 1 of 3</div>
+            <h2 class="card-title">Upload DOCX here</h2>
+            <p class="card-sub">Drag &amp; drop your document or browse</p>
+          </div>
+          <form id="uploadForm" method="post" action="/upload" enctype="multipart/form-data" novalidate>
+            <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload DOCX file, drag and drop or press Enter to browse">
+              <div class="dz-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg></div>
+              <div class="dz-title">Upload DOCX here</div>
+              <div class="dz-hint">Drag &amp; drop your document</div>
+              <div class="or">or</div>
+              <label class="choose-btn" for="docxInput"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 18v-6"/><path d="M9 15l3 3 3-3"/></svg> Choose DOCX File</label>
+              <input type="file" id="docxInput" name="docx" accept=".docx" required aria-label="Choose DOCX file">
+              <div class="dz-foot">Only <strong>.docx</strong> files &nbsp;•&nbsp; Max <strong>100 MB</strong></div>
+              <div class="drop-hint">Drop to upload</div>
+              <div class="dz-error" id="dzError">Only .docx files are supported</div>
+            </div>
+            <div class="selected" id="selected" role="status" aria-live="polite">
+              <div class="file-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></div>
+              <div class="file-meta"><div class="file-name" id="fileName"></div><div class="file-size" id="fileSize"></div></div>
+              <div class="file-ready">Ready to convert</div>
+              <button type="button" class="remove-btn" id="removeFile" aria-label="Remove file"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
+            </div>
+            <div class="convert-wrap" id="convertWrap">
+              <button class="btn primary" id="convertBtn" type="submit">Convert to HTML</button>
+            </div>
+          </form>
+          <div class="converting" id="converting" aria-live="polite">
+            <h3 class="conv-title">Converting your document...</h3>
+            <p class="conv-sub">This usually takes a few seconds</p>
+            <div class="progress-track" aria-hidden="true"><div class="progress-bar"></div></div>
+            <ul class="steps" id="convSteps">
+              <li><i><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg></i> Analyzing structure</li>
+              <li><i></i> Preserving formatting</li>
+              <li><i></i> Processing images</li>
+              <li><i></i> Building semantic HTML</li>
+            </ul>
+          </div>
+          <div class="success-panel" id="successPanel" aria-live="polite">
+            <div class="success-badge"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M20 6L9 17l-5-5"/></svg></div>
+            <h3 class="success-title">Conversion complete</h3>
+            <p class="success-sub">Your HTML is ready</p>
+            <div class="file-map">
+              <span class="file-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span id="successFileName">document.docx</span></span>
+              <span class="arrow">→</span>
+              <span class="file-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span id="successDlName">document.html</span></span>
+            </div>
+            <div class="success-actions">
+              <a class="btn primary" id="openPreviewBtn" href="#" target="_blank" rel="noopener">Open Preview</a>
+              <a class="btn ghost" id="downloadBtn" href="#">Download HTML</a>
+            </div>
+          </div>
+          <div id="alertBox" style="display:none" role="alert"></div>
+          <div class="pipeline" id="pipeline" aria-label="Progress">
+            <span class="pipe-step" data-step="1"><span class="pipe-num">1</span> Upload</span>
+            <span class="pipe-arrow">→</span>
+            <span class="pipe-step" data-step="2"><span class="pipe-num">2</span> Convert</span>
+            <span class="pipe-arrow">→</span>
+            <span class="pipe-step" data-step="3"><span class="pipe-num">3</span> Preview</span>
+          </div>
+        </div>
+        <div id="statusLive" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+      </section>
+    </div>
+    <div class="post-result hidden" id="postResult" aria-live="polite"></div>
+
+    <section class="features" aria-label="Benefits">
+      <div class="feat"><div class="feat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 20h9"/><path d="M16 20V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v16"/><path d="M8 8h4"/><path d="M8 12h6"/><path d="M8 16h4"/></svg></div><div class="feat-title">Pixel-perfect Conversion</div><p class="feat-desc">Preserves fonts, sizes, spacing and layout exactly as in Word.</p></div>
+      <div class="feat"><div class="feat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h5"/></svg></div><div class="feat-title">All Elements Supported</div><p class="feat-desc">Tables, lists, images, headers, footers, numbering &amp; more.</p></div>
+      <div class="feat"><div class="feat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M10 12H8"/><path d="M16 16H8"/><path d="M13 12h3"/></svg></div><div class="feat-title">Clean &amp; Semantic HTML</div><p class="feat-desc">Well-structured, lightweight and SEO-friendly output.</p></div>
+      <div class="feat"><div class="feat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 0 20"/><path d="M12 2a15 15 0 0 0 0 20"/></svg></div><div class="feat-title">Works Everywhere</div><p class="feat-desc">Compatible with modern browsers and devices.</p></div>
+    </section>
+  </main>
+
+  <script src="/frontend/app.js"></script>
+</body>
+</html>

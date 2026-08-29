@@ -29,7 +29,7 @@ core.units) and the PageLayout; no geometry is inferred from rendered pixels.
 
 import base64
 import html
-from typing import Optional
+from typing import Optional, List, Tuple
 
 from core.model import Run, Paragraph, Table, Row, Cell, BorderEdge, HeaderFooter, Section, Image, ImageAsset, PageLayout, format_numbering_label
 from core.units import emu_to_px, twip_to_emu
@@ -244,6 +244,41 @@ def _is_top_bottom(img: Image) -> bool:
     return img.wrap_mode == "topAndBottom"
 
 
+def _wrap_polygon_to_css(polygon: Optional[List[Tuple[int, int]]]) -> Optional[str]:
+    """Convert OOXML wrap polygon (21600x21600 space) to CSS polygon() value.
+
+    Returns a string like "polygon(0% 0%, 100% 0%, 100% 100%, 0% 100%)"
+    or None if the polygon is invalid/rectangular.
+    """
+    if not polygon or len(polygon) < 3:
+        return None
+
+    # Check if polygon is a simple rectangle (4 points + closed = 5 points where
+    # points are (0,0), (21600,0), (21600,21600), (0,21600), (0,0)).
+    # If so, return None to use margin-box instead.
+    if len(polygon) == 5:
+        pts = polygon
+        rect_corners = {(0, 0), (21600, 0), (21600, 21600), (0, 21600)}
+        if set(pts[:4]) == rect_corners and pts[4] == pts[0]:
+            return None
+
+    # Convert to percentages. OOXML wrapPolygon uses a 21600x21600 coordinate
+    # space that maps to the image's extent rectangle.
+    coords = []
+    for x, y in polygon:
+        # Skip the closing duplicate point for CSS (polygon() auto-closes).
+        if coords and x == coords[0][0] and y == coords[0][1]:
+            break
+        x_pct = x / 21600.0 * 100.0
+        y_pct = y / 21600.0 * 100.0
+        coords.append(("%g%%" % x_pct, "%g%%" % y_pct))
+
+    if len(coords) < 3:
+        return None
+
+    return "polygon(" + ", ".join("%s %s" % (x, y) for x, y in coords) + ")"
+
+
 def _float_style(img: Image, page: PageLayout, container: str) -> str:
     """Build the CSS style string for a floating image (absolute or float)."""
     style: dict = {}
@@ -329,8 +364,14 @@ def _float_style(img: Image, page: PageLayout, container: str) -> str:
         ml = emu_to_px(d.get("left", 0))
         style["margin"] = "%dpx %dpx %dpx %dpx" % (mt, mr, mb, ml)
         if img.wrap_mode in ("tight", "through"):
-            style["shape-outside"] = "margin-box"
-            style["clip-path"] = "margin-box"
+            poly_css = _wrap_polygon_to_css(getattr(img, "wrap_polygon", None))
+            if poly_css:
+                style["shape-outside"] = poly_css
+                # clip-path only if safe - polygon may not match image bounds exactly
+                # For now, we don't set clip-path to avoid clipping image content
+            else:
+                style["shape-outside"] = "margin-box"
+                style["clip-path"] = "margin-box"
     else:
         # Absolute positioning within the chosen coordinate container.
         style["position"] = "absolute"
@@ -909,41 +950,80 @@ def _viewer_style() -> str:
     return (
         "  <style>\n"
         "    *{box-sizing:border-box}\n"
-        "    html,body{margin:0;padding:0;height:100%;}\n"
-        "    body{font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;background:#fff;overflow:hidden;}\n"
-        "    .page-frame{display:flex;flex-direction:column;height:100vh;overflow:hidden;}\n"
-        "    .viewer-title{padding:10px 16px 9px;border-bottom:1px solid #e5e7eb;background:#fff;flex-shrink:0;}\n"
+        "    html,body{margin:0;padding:0;height:100%;overflow:hidden;}\n"
+        "    body{font:14px/1.5 Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#111827;background:#fff;overflow:hidden;-webkit-font-smoothing:antialiased;}\n"
+        "    .page-frame{display:flex;flex-direction:column;height:100vh;overflow:hidden;background:#fff;}\n"
+        "    .viewer-header{height:52px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid #e5e7eb;background:rgba(255,255,255,.92);backdrop-filter:blur(10px) saturate(1.2);flex-shrink:0;z-index:8;}\n"
+        "    .viewer-brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px;letter-spacing:-.01em;color:#0f172a;white-space:nowrap;flex-shrink:0;}\n"
+        "    .viewer-brand-icon{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;background:linear-gradient(135deg,#5b5bf6,#8b5cf6);color:#fff;flex-shrink:0;}\n"
+        "    .viewer-docname{flex:1;min-width:0;text-align:center;font-size:13px;font-weight:600;color:#1f2937;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 12px;}\n"
+        "    .viewer-actions{display:flex;align-items:center;gap:6px;flex-shrink:0;}\n"
+        "    .viewer-action{appearance:none;border:1px solid #e5e7eb;background:#fff;color:#374151;cursor:pointer;width:32px;height:32px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;transition:all .15s;}\n"
+        "    .viewer-action:hover{background:#f9fafb;border-color:#d1d5db;transform:translateY(-1px);box-shadow:0 1px 6px rgba(0,0,0,.06);}\n"
+        "    .viewer-action:focus-visible{outline:2px solid #6366f1;outline-offset:2px;}\n"
+        "    .viewer-action.primary{border-color:#6366f1;background:#6366f1;color:#fff;}\n"
+        "    .viewer-action.primary:hover{background:#4f46e5;}\n"
+        "    .viewer-title{padding:8px 16px 8px;border-bottom:1px solid #f3f4f6;background:#fff;flex-shrink:0;}\n"
         "    .viewer-title .doc-title{margin:0;font-size:14px;font-weight:600;line-height:1.4;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}\n"
-        "    .viewer{display:flex;flex:1;min-height:0;overflow:hidden;}\n"
-        "    .viewer-sidebar{width:280px;min-width:280px;max-width:280px;background:#fcfcfc;border-right:1px solid #e5e7eb;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;transition:width .18s ease,min-width .18s ease,opacity .18s ease,transform .18s ease;}\n"
+        "    .viewer{display:flex;flex:1;min-height:0;overflow:hidden;background:#f3f4f6;}\n"
+        "    .viewer-sidebar{width:280px;min-width:280px;max-width:280px;background:#fff;border-right:1px solid #e5e7eb;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;transition:width .22s cubic-bezier(.2,.8,.2,1),min-width .22s cubic-bezier(.2,.8,.2,1),opacity .18s ease,transform .22s ease;}\n"
         "    .viewer.viewer--sidebar-collapsed .viewer-sidebar{width:0;min-width:0;max-width:0;border-right-width:0;opacity:0;pointer-events:none;transform:translateX(-8px);overflow:hidden;}\n"
-        "    .sidebar-header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #e5e7eb;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#374151;white-space:nowrap;flex-shrink:0;}\n"
+        "    .sidebar-header{display:flex;align-items:center;gap:8px;padding:10px 12px 8px;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#6b7280;white-space:nowrap;flex-shrink:0;}\n"
         "    .sidebar-title{flex:1;overflow:hidden;text-overflow:ellipsis;}\n"
-        "    .toc{flex:1;overflow-y:auto;overflow-x:hidden;padding:8px;}\n"
+        "    .sidebar-header-actions{display:flex;gap:4px;}\n"
+        "    .toc-search-wrap{padding:0 10px 8px;flex-shrink:0;}\n"
+        "    .toc-search{position:relative;}\n"
+        "    .toc-search input{width:100%;padding:7px 28px 7px 30px;font-size:13px;line-height:1;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;color:#111827;outline:none;transition:border-color .15s,box-shadow .15s,background .15s;}\n"
+        "    .toc-search input::placeholder{color:#9ca3af;}\n"
+        "    .toc-search input:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.12);background:#fff;}\n"
+        "    .toc-search-icon{position:absolute;left:8px;top:50%;transform:translateY(-50%);color:#9ca3af;pointer-events:none;}\n"
+        "    .toc-search-clear{position:absolute;right:6px;top:50%;transform:translateY(-50%);appearance:none;border:0;background:transparent;color:#9ca3af;cursor:pointer;width:20px;height:20px;border-radius:6px;display:none;align-items:center;justify-content:center;}\n"
+        "    .toc-search-clear.visible{display:inline-flex;}\n"
+        "    .toc-search-clear:hover{background:#f3f4f6;color:#374151;}\n"
+        "    .toc-no-results{padding:14px 10px;color:#9ca3af;font-size:13px;text-align:center;display:none;}\n"
+        "    .toc-no-results.visible{display:block;}\n"
+        "    .toc{flex:1;overflow-y:auto;overflow-x:hidden;padding:4px 8px 12px;scrollbar-width:thin;}\n"
         "    .toc-empty{color:#888;font-size:13px;padding:12px;}\n"
         "    .toc-tree{list-style:none;margin:0;padding:0;}\n"
         "    .toc-tree ul{list-style:none;margin:0;padding-left:14px;}\n"
         "    .toc-row{display:flex;align-items:center;gap:2px;}\n"
-        "    .toc-link{flex:1;display:block;padding:4px 6px;font-size:13px;color:#374151;text-decoration:none;border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}\n"
-        "    .toc-link:hover{background:#eef1f5;color:#111;}\n"
-        "    .toc-link.is-active{background:#dbeafe;color:#1d4ed8;font-weight:600;}\n"
-        "    .toc-link:focus-visible{outline:2px solid #2563eb;outline-offset:1px;}\n"
+        "    .toc-link{flex:1;display:block;padding:5px 8px;font-size:13px;line-height:1.35;color:#374151;text-decoration:none;border-radius:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:background .12s,color .12s,transform .12s;}\n"
+        "    .toc-link:hover{background:#f3f4f6;color:#111827;}\n"
+        "    .toc-link.is-active{background:#eef2ff;color:#3730a3;font-weight:600;box-shadow:inset 3px 0 0 #6366f1;}\n"
+        "    .toc-link:focus-visible{outline:2px solid #6366f1;outline-offset:1px;}\n"
+        "    .toc-link.is-search-hidden{display:none;}\n"
+        "    .toc-mark{background:#fef08a;color:#854d0e;padding:1px 2px;border-radius:3px;font-weight:600;}\n"
         "    .toc-parent{margin:1px 0;}\n"
         "    .toc-parent.is-collapsed>ul.toc-children{display:none;}\n"
-        "    .toc-toggle{appearance:none;border:0;background:transparent;cursor:pointer;width:20px;height:20px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;font-size:10px;color:#6b7280;border-radius:3px;transition:transform .15s;}\n"
-        "    .toc-toggle::before{content:\"\\25BC\";display:block;font-size:9px;transition:transform .15s;}\n"
+        "    .toc-parent.is-search-hidden{display:none;}\n"
+        "    .toc-toggle{appearance:none;border:0;background:transparent;cursor:pointer;width:22px;height:22px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;font-size:10px;color:#9ca3af;border-radius:6px;transition:all .15s;}\n"
+        "    .toc-toggle::before{content:\"▾\";display:block;font-size:10px;transition:transform .18s;}\n"
         "    .toc-parent.is-collapsed>.toc-row .toc-toggle::before{transform:rotate(-90deg);}\n"
-        "    .toc-toggle:hover{background:#e5e7eb;color:#111;}\n"
-        "    .toc-toggle:focus-visible{outline:2px solid #2563eb;}\n"
-        "    .toc-leaf{padding-left:22px;}\n"
-        "    .doc-main{flex:1;overflow-y:auto;overflow-x:hidden;background:#efefef;padding:0;display:flex;flex-direction:column;align-items:center;min-width:0;}\n"
-        "    .doc-toolbar{position:sticky;top:0;z-index:5;width:100%;max-width:860px;display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(239,239,239,.92);backdrop-filter:blur(6px);}\n"
-        "    .sidebar-toggle-main{appearance:none;border:1px solid #d1d5db;background:#fff;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:13px;line-height:1;display:inline-flex;align-items:center;gap:6px;color:#374151;box-shadow:0 1px 2px rgba(0,0,0,.06);}\n"
-        "    .sidebar-toggle-main:hover{background:#f3f4f6;}\n"
-        "    .sidebar-toggle-main:focus-visible{outline:2px solid #2563eb;outline-offset:2px;}\n"
-        "    .docx-page{background:#fff;margin:16px auto 40px;box-shadow:0 1px 6px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);width:100%;max-width:860px;position:relative;flex-shrink:0;box-sizing:border-box;}\n"
+        "    .toc-toggle:hover{background:#f3f4f6;color:#374151;}\n"
+        "    .toc-toggle:focus-visible{outline:2px solid #6366f1;}\n"
+        "    .toc-leaf{padding-left:24px;}\n"
+        "    .toc-leaf.is-search-hidden{display:none;}\n"
+        "    .doc-main{flex:1;overflow-y:auto;overflow-x:hidden;background:#f1f2f4;padding:0;display:flex;flex-direction:column;align-items:center;min-width:0;scroll-behavior:smooth;}\n"
+        "    .doc-toolbar{position:sticky;top:0;z-index:5;width:100%;max-width:860px;display:flex;align-items:center;gap:8px;padding:10px 16px;background:rgba(241,242,244,.92);backdrop-filter:blur(8px);flex-shrink:0;}\n"
+        "    .focus-banner{width:100%;max-width:860px;margin:0 auto;padding:10px 16px 8px;display:none;align-items:center;gap:10px;}\n"
+        "    .focus-banner.visible{display:flex;animation:fadeIn .18s ease;}\n"
+        "    .focus-banner-inner{flex:1;display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border:1px solid #e0e7ff;border-radius:12px;box-shadow:0 4px 18px rgba(99,102,241,.08);}\n"
+        "    .focus-banner-kicker{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#6366f1;white-space:nowrap;}\n"
+        "    .focus-banner-title{flex:1;min-width:0;font-size:13px;font-weight:600;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}\n"
+        "    .focus-banner-clear{appearance:none;border:1px solid #e5e7eb;background:#fff;color:#374151;cursor:pointer;padding:6px 10px;border-radius:999px;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px;transition:all .15s;white-space:nowrap;}\n"
+        "    .focus-banner-clear:hover{background:#f9fafb;border-color:#d1d5db;}\n"
+        "    .focus-banner-close{appearance:none;border:0;background:transparent;color:#9ca3af;cursor:pointer;width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;}\n"
+        "    .focus-banner-close:hover{background:#f3f4f6;color:#374151;}\n"
+        "    .sidebar-toggle-main{appearance:none;border:1px solid #e5e7eb;background:#fff;cursor:pointer;padding:7px 12px;border-radius:8px;font-size:13px;line-height:1;display:inline-flex;align-items:center;gap:6px;color:#374151;box-shadow:0 1px 2px rgba(0,0,0,.05);transition:all .15s;}\n"
+        "    .sidebar-toggle-main:hover{background:#f9fafb;transform:translateY(-1px);box-shadow:0 4px 10px rgba(0,0,0,.06);}\n"
+        "    .sidebar-toggle-main:focus-visible{outline:2px solid #6366f1;outline-offset:2px;}\n"
+        "    .docx-page{background:#fff;margin:12px auto 48px;box-shadow:0 8px 32px rgba(15,23,42,.08),0 0 0 1px rgba(15,23,42,.04);width:100%;max-width:860px;position:relative;flex-shrink:0;box-sizing:border-box;border-radius:10px;overflow:hidden;transition:transform .22s ease,opacity .18s ease;}\n"
         "    .docx-page[style]{max-width:min(860px,calc(100% - 32px)) !important;}\n"
+        "    .docx-block{transition:opacity .18s ease,transform .18s ease;}\n"
         "    .docx-block.is-hidden{display:none !important;}\n"
+        "    .docx-block.is-entering{animation:docFadeIn .22s ease both;}\n"
+        "    @keyframes docFadeIn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}\n"
+        "    @keyframes fadeIn{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:translateY(0);}}\n"
         "    .docx-float-wrap.is-hidden{display:none !important;}\n"
         "    .docx-float-wrap{position:static;}\n"
         "    .docx-para-float-wrap.is-hidden{display:none !important;}\n"
@@ -951,7 +1031,7 @@ def _viewer_style() -> str:
         "    img[data-anchor].is-hidden{display:none !important;}\n"
         "    img.docx-float.is-hidden, img.docx-float-wrapped.is-hidden{display:none !important;}\n"
         "    .docx-hf-float-wrap{position:static;}\n"
-        "    #exit-focus{margin-left:8px;}\n"
+        "    #exit-focus{margin-left:auto;}\n"
         "    button.sidebar-toggle-main[hidden]{display:none !important;}\n"
         "    .docx-content{box-sizing:border-box;max-width:100%;overflow-wrap:break-word;font-size:" + ("%.1f" % (DEFAULT_FONT_HALF_POINTS / 2.0)) + "pt;}\n"
         "    img.docx-float{position:absolute;}\n"
@@ -967,9 +1047,9 @@ def _viewer_style() -> str:
         "    .docx-ordered-list{list-style:none;padding-left:0;}\n"
         "    .docx-bullet-list{list-style:none;padding-left:0;}\n"
         "    table.docx-table{border-collapse:collapse;width:100%;margin:1em 0;}\n"
-        "    table.docx-table td,table.docx-table th{border:1px solid #999;padding:6px 8px;vertical-align:top;word-wrap:break-word;}\n"
+        "    table.docx-table td,table.docx-table th{border:1px solid #d1d5db;padding:6px 8px;vertical-align:top;word-wrap:break-word;}\n"
         "    table.docx-table td p{margin:0;}\n"
-        "    header.docx-header,footer.docx-footer{border:1px dashed #bbb;padding:6px 8px;margin:6px 0;background:#fafafa;}\n"
+        "    header.docx-header,footer.docx-footer{border:1px dashed #cbd5e1;padding:6px 8px;margin:6px 0;background:#f8fafc;}\n"
         "    header.docx-header p,footer.docx-footer p{margin:0; position:relative; min-height:1.2em;}\n"
         "    .docx-tab{display:inline-block;width:48px;}\n"
         "    .docx-tab-leader{position:absolute; height:0; pointer-events:none;}\n"
@@ -978,13 +1058,16 @@ def _viewer_style() -> str:
         "    .docx-page-number::after{content:\"[PAGE]\";}\n"
         "    .docx-num-pages::after{content:\"[NUMPAGES]\";}\n"
         "    .docx-page-ref::after{content:\"[PAGEREF]\";}\n"
-        "    .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.32);z-index:15;}\n"
-        "    @media (max-width:780px){.viewer-sidebar{position:fixed;left:0;top:0;bottom:0;z-index:20;width:280px;min-width:280px;max-width:280px;transform:translateX(-100%);transition:transform .22s ease;opacity:1;pointer-events:auto;border-right:1px solid #e5e7eb;}\n"
+        "    .sidebar-overlay{position:fixed;inset:0;background:rgba(15,23,42,.32);backdrop-filter:blur(2px);z-index:15;opacity:0;visibility:hidden;transition:opacity .18s,visibility .18s;}\n"
+        "    .sidebar-overlay.visible{opacity:1;visibility:visible;}\n"
+        "    @media (max-width:780px){.viewer-sidebar{position:fixed;left:0;top:0;bottom:0;z-index:20;width:280px;min-width:280px;max-width:280px;transform:translateX(-100%);transition:transform .24s cubic-bezier(.2,.8,.2,1);opacity:1;pointer-events:auto;border-right:1px solid #e5e7eb;box-shadow:12px 0 40px rgba(15,23,42,.12);}\n"
         "    .viewer.viewer--mobile-open .viewer-sidebar{transform:translateX(0);}\n"
-        "    .viewer.viewer--sidebar-collapsed .viewer-sidebar{width:280px;min-width:280px;max-width:280px;opacity:1;pointer-events:auto;transform:translateX(-100%);border-right-width:1px;}\n"
+        "    .viewer.viewer--sidebar-collapsed .viewer-sidebar{width:280px;min-width:280px;max-width:280px;opacity:1;pointer-events:auto;transform:translateX(-100%);border-right-width:1px;box-shadow:12px 0 40px rgba(15,23,42,.12);}\n"
         "    .viewer.viewer--mobile-open.viewer--sidebar-collapsed .viewer-sidebar{transform:translateX(0);}\n"
+        "    .viewer-header{padding:0 10px;gap:8px;}\n"
+        "    .viewer-docname{font-size:12px;padding:0 6px;}\n"
         "    .doc-main{padding-top:0;}}\n"
-        "    @media (prefers-reduced-motion:reduce){*{transition:none!important;}}\n"
+        "    @media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important;scroll-behavior:auto!important;}}\n"
         "  </style>\n"
     )
 
@@ -1004,21 +1087,24 @@ def _viewer_script() -> str:
         "    function setSidebarOpen(open){\n"
         "      if(isMobile()){\n"
         "        viewer.classList.toggle('viewer--mobile-open',open);\n"
-        "        overlay.hidden=!open;\n"
+        "        if(open){ overlay.hidden=false; overlay.classList.add('visible'); } else { overlay.classList.remove('visible'); setTimeout(function(){ if(!viewer.classList.contains('viewer--mobile-open')) overlay.hidden=true; },180); }\n"
         "        viewer.classList.toggle('viewer--sidebar-collapsed',!open);\n"
         "      } else {\n"
         "        viewer.classList.toggle('viewer--sidebar-collapsed',!open);\n"
         "        viewer.classList.remove('viewer--mobile-open');\n"
-        "        overlay.hidden=true;\n"
+        "        overlay.hidden=true; overlay.classList.remove('visible');\n"
         "      }\n"
         "      toggle.setAttribute('aria-expanded',String(open));\n"
         "      toggle.setAttribute('aria-label',open?'Close outline':'Open outline');\n"
+        "      var ht=document.getElementById('header-toc'); if(ht){ ht.setAttribute('aria-expanded',String(open)); }\n"
         "    }\n"
         "    function isSidebarOpen(){\n"
         "      if(isMobile()) return viewer.classList.contains('viewer--mobile-open');\n"
         "      return !viewer.classList.contains('viewer--sidebar-collapsed');\n"
         "    }\n"
         "    toggle.addEventListener('click',function(){setSidebarOpen(!isSidebarOpen());});\n"
+        "    var headerToc=document.getElementById('header-toc'); if(headerToc) headerToc.addEventListener('click',function(){setSidebarOpen(!isSidebarOpen());});\n"
+        "    var sideCollapse=document.getElementById('sidebar-collapse'); if(sideCollapse) sideCollapse.addEventListener('click',function(){setSidebarOpen(false);});\n"
         "    overlay.addEventListener('click',function(){setSidebarOpen(false);});\n"
         "    document.addEventListener('keydown',function(e){if(e.key==='Escape'&&isMobile()&&isSidebarOpen()) setSidebarOpen(false);});\n"
         "    setSidebarOpen(!isMobile());\n"
@@ -1070,14 +1156,30 @@ def _viewer_script() -> str:
         "    }\n"
         "    var currentFocus=null;\n"
         "    var exitBtn=document.getElementById('exit-focus');\n"
-        "    function showExit(on){ if(exitBtn) exitBtn.hidden=!on; }\n"
+        "    var focusBanner=document.getElementById('focus-banner');\n"
+        "    var focusBannerTitle=document.getElementById('focus-banner-title');\n"
+        "    var focusClear=document.getElementById('focus-banner-clear');\n"
+        "    var focusClose=document.getElementById('focus-banner-close');\n"
+        "    function showExit(on, title){\n"
+        "      if(exitBtn) exitBtn.hidden=!on;\n"
+        "      if(focusBanner){\n"
+        "        if(on){ focusBanner.classList.add('visible'); if(focusBannerTitle && title) focusBannerTitle.textContent=title; }\n"
+        "        else { focusBanner.classList.remove('visible'); }\n"
+        "      }\n"
+        "    }\n"
+        "    function getHeadingText(id){\n"
+        "      var a=linkById[id]; if(a) return a.textContent.trim();\n"
+        "      var h=document.getElementById(id); if(h) return h.textContent.trim();\n"
+        "      return id;\n"
+        "    }\n"
         "    function clearFocus(){\n"
         "      var bs=docMain.querySelectorAll('.docx-block');\n"
-        "      for(var i=0;i<bs.length;i++){ bs[i].classList.remove('is-hidden'); }\n"
+        "      for(var i=0;i<bs.length;i++){ bs[i].classList.remove('is-hidden'); bs[i].classList.remove('is-entering'); }\n"
         "      var fs=docMain.querySelectorAll('.docx-float-wrap, .docx-para-float-wrap, img[data-anchor]');\n"
         "      for(var i=0;i<fs.length;i++){ fs[i].classList.remove('is-hidden'); }\n"
         "      showExit(false);\n"
         "      currentFocus=null;\n"
+        "      docMain.scrollTop=0;\n"
         "    }\n"
         "    function focusHeading(id){\n"
         "      if(!id) return;\n"
@@ -1089,20 +1191,22 @@ def _viewer_script() -> str:
         "      if(id===titleId){ startIdx=-1; }\n"
         "      else { for(var i=0;i<blocks.length;i++){ if(blocks[i].getAttribute('data-heading-id')===id){ startIdx=i; break; } } }\n"
         "      if(startIdx===-2) return;\n"
-        "      for(var i=0;i<blocks.length;i++){ blocks[i].classList.add('is-hidden'); }\n"
+        "      for(var i=0;i<blocks.length;i++){ blocks[i].classList.add('is-hidden'); blocks[i].classList.remove('is-entering'); }\n"
+        "      var visible=[];\n"
         "      if(startIdx===-1){\n"
         "        for(var i=0;i<blocks.length;i++){\n"
         "          var l=parseInt(blocks[i].getAttribute('data-level')||'0',10);\n"
         "          if(i>0 && l && l<=level) break;\n"
-        "          blocks[i].classList.remove('is-hidden');\n"
+        "          blocks[i].classList.remove('is-hidden'); visible.push(blocks[i]);\n"
         "        }\n"
         "      } else {\n"
         "        for(var i=startIdx;i<blocks.length;i++){\n"
         "          var l=parseInt(blocks[i].getAttribute('data-level')||'0',10);\n"
         "          if(i>startIdx && l && l<=level) break;\n"
-        "          blocks[i].classList.remove('is-hidden');\n"
+        "          blocks[i].classList.remove('is-hidden'); visible.push(blocks[i]);\n"
         "        }\n"
         "      }\n"
+        "      for(var vi=0; vi<visible.length; vi++){ (function(el,idx){ requestAnimationFrame(function(){ el.classList.add('is-entering'); }); })(visible[vi], vi); }\n"
         "      var floats=docMain.querySelectorAll('.docx-float-wrap, .docx-para-float-wrap, img[data-anchor]');\n"
         "      for(var f=0;f<floats.length;f++){\n"
         "        var aStr=floats[f].getAttribute('data-anchor');\n"
@@ -1116,7 +1220,7 @@ def _viewer_script() -> str:
         "        if(blocks[a].classList.contains('is-hidden')) floats[f].classList.add('is-hidden');\n"
         "        else floats[f].classList.remove('is-hidden');\n"
         "      }\n"
-        "      showExit(true);\n"
+        "      showExit(true, getHeadingText(id));\n"
         "      docMain.scrollTop=0;\n"
         "      currentFocus=id;\n"
         "    }\n"
@@ -1168,11 +1272,78 @@ def _viewer_script() -> str:
         "        history.pushState({focusId:null},'',location.pathname+location.search);\n"
         "      });\n"
         "    }\n"
+        "    if(focusClear) focusClear.addEventListener('click',function(){ clearFocus(); history.pushState({focusId:null},'',location.pathname+location.search); });\n"
+        "    if(focusClose) focusClose.addEventListener('click',function(){ clearFocus(); history.pushState({focusId:null},'',location.pathname+location.search); });\n"
         "    window.addEventListener('popstate',function(e){\n"
         "      var st=e.state;\n"
         "      if(st && st.focusId){ focusHeading(st.focusId); setActive(st.focusId); }\n"
         "      else { clearFocus(); }\n"
         "    });\n"
+        "    var tocSearch=document.getElementById('toc-search');\n"
+        "    var tocClear=document.getElementById('toc-search-clear');\n"
+        "    var tocNoResults=document.getElementById('toc-no-results');\n"
+        "    var headerSearch=document.getElementById('header-search');\n"
+        "    var viewerDownload=document.getElementById('viewer-download');\n"
+        "    var tocLinksCache=null; var tocListItemsCache=null; var origLinkHTML={};\n"
+        "    function ensureCache(){ if(tocLinksCache) return; tocLinksCache=Array.prototype.slice.call(document.querySelectorAll('a.toc-link')); tocListItemsCache=Array.prototype.slice.call(document.querySelectorAll('.toc-tree li')); tocLinksCache.forEach(function(a){ origLinkHTML[a.getAttribute('href')] = a.innerHTML; }); }\n"
+        "    function escapeReg(s){ return s.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&'); }\n"
+        "    var searchTimer=null;\n"
+        "    function doSearch(q){\n"
+        "      ensureCache();\n"
+        "      var query=(q||'').trim().toLowerCase();\n"
+        "      if(tocClear) tocClear.classList.toggle('visible', !!query);\n"
+        "      if(!query){\n"
+        "        tocLinksCache.forEach(function(a){ a.innerHTML=origLinkHTML[a.getAttribute('href')]||a.innerHTML; a.classList.remove('is-search-hidden'); var li=a.closest('li'); if(li) li.classList.remove('is-search-hidden'); });\n"
+        "        tocListItemsCache.forEach(function(li){ li.classList.remove('is-search-hidden'); });\n"
+        "        document.querySelectorAll('.toc-parent.is-collapsed-search').forEach(function(el){ el.classList.remove('is-collapsed-search'); });\n"
+        "        if(tocNoResults) tocNoResults.classList.remove('visible');\n"
+        "        return;\n"
+        "      }\n"
+        "      var re=new RegExp('('+escapeReg(query)+')','gi');\n"
+        "      var anyMatch=false;\n"
+        "      var matchedIds={};\n"
+        "      tocLinksCache.forEach(function(a){\n"
+        "        var text=a.textContent||'';\n"
+        "        var isMatch=text.toLowerCase().indexOf(query)!==-1;\n"
+        "        if(isMatch){\n"
+        "          anyMatch=true; matchedIds[a.getAttribute('href')]=true;\n"
+        "          var orig=origLinkHTML[a.getAttribute('href')]||a.innerHTML;\n"
+        "          a.innerHTML=orig.replace(re,'<mark class=\"toc-mark\">$1</mark>');\n"
+        "        } else {\n"
+        "          a.innerHTML=origLinkHTML[a.getAttribute('href')]||a.innerHTML;\n"
+        "        }\n"
+        "      });\n"
+        "      tocLinksCache.forEach(function(a){\n"
+        "        var li=a.closest('li');\n"
+        "        var isDirect=!!matchedIds[a.getAttribute('href')];\n"
+        "        var hasDescendant=false;\n"
+        "        if(!isDirect){\n"
+        "          var ul=li.querySelector('ul');\n"
+        "          if(ul){ var descLinks=ul.querySelectorAll('a.toc-link'); for(var i=0;i<descLinks.length;i++){ if(matchedIds[descLinks[i].getAttribute('href')]){ hasDescendant=true; break; } } }\n"
+        "        }\n"
+        "        var shouldShow=isDirect || hasDescendant;\n"
+        "        if(li) li.classList.toggle('is-search-hidden', !shouldShow);\n"
+        "        a.classList.toggle('is-search-hidden', !isDirect && !hasDescendant);\n"
+        "      });\n"
+        "      if(anyMatch){\n"
+        "        document.querySelectorAll('.toc-parent').forEach(function(li){\n"
+        "          var ul=li.querySelector('ul.toc-children');\n"
+        "          if(!ul) return;\n"
+        "          var hasVisible=!!li.querySelector('a.toc-link:not(.is-search-hidden)');\n"
+        "          if(hasVisible){ li.classList.remove('is-collapsed'); li.setAttribute('aria-expanded','true'); var btn=li.querySelector(':scope > .toc-row > .toc-toggle'); if(btn){ btn.setAttribute('aria-expanded','true'); } ul.hidden=false; }\n"
+        "        });\n"
+        "      }\n"
+        "      if(tocNoResults) tocNoResults.classList.toggle('visible', !anyMatch);\n"
+        "    }\n"
+        "    if(tocSearch){\n"
+        "      tocSearch.addEventListener('input', function(){ clearTimeout(searchTimer); var v=this.value; searchTimer=setTimeout(function(){ doSearch(v); },150); });\n"
+        "      tocSearch.addEventListener('keydown', function(e){ if(e.key==='Escape'){ this.value=''; doSearch(''); this.blur(); } });\n"
+        "      if(tocClear) tocClear.addEventListener('click', function(){ tocSearch.value=''; doSearch(''); tocSearch.focus(); });\n"
+        "    }\n"
+        "    document.addEventListener('keydown', function(e){ if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='k'){ var ae=document.activeElement; if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA')) return; e.preventDefault(); if(!isSidebarOpen()) setSidebarOpen(true); setTimeout(function(){ if(tocSearch) tocSearch.focus(); },80); } });\n"
+        "    document.addEventListener('keydown', function(e){ if(e.key==='Escape'){ var q=tocSearch?tocSearch.value:''; if(q){ tocSearch.value=''; doSearch(''); } else if(currentFocus){ clearFocus(); history.pushState({focusId:null},'',location.pathname+location.search); } } });\n"
+        "    if(headerSearch) headerSearch.addEventListener('click', function(){ if(!isSidebarOpen()) setSidebarOpen(true); setTimeout(function(){ if(tocSearch) tocSearch.focus(); },80); });\n"
+        "    if(viewerDownload) viewerDownload.addEventListener('click', function(){ try{ var htmlStr='<!DOCTYPE html>\\n'+document.documentElement.outerHTML; var b=new Blob([htmlStr],{type:'text/html'}); var a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=(document.title||'document')+'.html'; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },1000); }catch(err){ window.print(); } });\n"
 "    function layoutDecimalTabs(){\n"
         "      document.querySelectorAll('.docx-tab-segment[data-val=\"decimal\"]').forEach(function(seg){\n"
         "        var pos=parseInt(seg.getAttribute('data-pos'),10);\n"
@@ -1466,7 +1637,16 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
         '<aside id="viewer-sidebar" class="viewer-sidebar" aria-label="Document Outline">\n'
         '  <div class="sidebar-header">\n'
         '    <span class="sidebar-title">Document Outline</span>\n'
+        '    <span class="sidebar-header-actions"><button id="sidebar-collapse" class="viewer-action" aria-label="Collapse outline" title="Collapse"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 18l-6-6 6-6"/></svg></button></span>\n'
         '  </div>\n'
+        '  <div class="toc-search-wrap">\n'
+        '    <label class="toc-search" aria-label="Search headings">\n'
+        '      <span class="toc-search-icon" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></span>\n'
+        '      <input id="toc-search" type="search" placeholder="Search headings..." autocomplete="off" spellcheck="false" aria-label="Search headings">\n'
+        '      <button id="toc-search-clear" class="toc-search-clear" aria-label="Clear search" type="button"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>\n'
+        '    </label>\n'
+        '  </div>\n'
+        '  <div id="toc-no-results" class="toc-no-results" role="status" aria-live="polite">No headings found</div>\n'
         '  <nav class="toc" aria-label="Table of Contents">\n'
         + nav_inner + '\n'
         '  </nav>\n'
@@ -1478,10 +1658,28 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
         '  <button id="sidebar-toggle" class="sidebar-toggle-main" aria-expanded="true" aria-controls="viewer-sidebar" aria-label="Toggle outline">\n'
         '    <span aria-hidden="true">&#9776;</span> <span>Outline</span>\n'
         '  </button>\n'
-        '  <button id="exit-focus" class="sidebar-toggle-main" type="button" hidden>'
-        '&#8592; All document</button>\n'
+        '  <div id="focus-banner" class="focus-banner" role="status" aria-live="polite">\n'
+        '    <div class="focus-banner-inner">\n'
+        '      <span class="focus-banner-kicker">Viewing</span>\n'
+        '      <span id="focus-banner-title" class="focus-banner-title"></span>\n'
+        '      <button id="focus-banner-clear" class="focus-banner-clear" type="button">Show Full Document</button>\n'
+        '      <button id="focus-banner-close" class="focus-banner-close" type="button" aria-label="Close focus"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>\n'
+        '    </div>\n'
+        '  </div>\n'
+        '  <button id="exit-focus" class="sidebar-toggle-main" type="button" hidden>Show Full Document</button>\n'
         '</div>\n'
     )
+    viewer_header = (
+        '<header class="viewer-header" role="banner">\n'
+        '  <div class="viewer-brand"><span class="viewer-brand-icon" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span> DOCX \u2192 HTML</div>\n'
+        '  <div class="viewer-docname" id="viewer-docname" title="%s">%s</div>\n'
+        '  <div class="viewer-actions">\n'
+        '    <button id="header-search" class="viewer-action" aria-label="Search headings" title="Search (Ctrl+K)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></button>\n'
+        '    <button id="header-toc" class="viewer-action" aria-label="Toggle outline" aria-controls="viewer-sidebar" aria-expanded="true" title="Toggle outline"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/></svg></button>\n'
+        '    <button id="viewer-download" class="viewer-action primary" aria-label="Download HTML" title="Download HTML"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/></svg></button>\n'
+        '  </div>\n'
+        '</header>\n'
+    ) % (html.escape(title), html.escape(title))
     viewer_inner = (
         '<div class="viewer">\n'
         + sidebar_html + '\n'
@@ -1492,9 +1690,9 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
         '</div>'
     )
     if title_bar:
-        body = '<div class="page-frame">\n' + title_bar + '\n' + viewer_inner + '\n</div>'
+        body = '<div class="page-frame">\n' + viewer_header + '\n' + title_bar + '\n' + viewer_inner + '\n</div>'
     else:
-        body = '<div class="page-frame">\n' + viewer_inner + '\n</div>'
+        body = '<div class="page-frame">\n' + viewer_header + '\n' + viewer_inner + '\n</div>'
 
     style = _viewer_style()
     script = _viewer_script()

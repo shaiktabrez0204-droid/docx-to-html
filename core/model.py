@@ -15,7 +15,7 @@ semantic decisions.
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Union, Any, Tuple
 
 from core.units import emu_to_px
 
@@ -266,6 +266,10 @@ class Image:
     # anchor's distT/distB/distL/distR attributes (and wrap sub-element where
     # applicable). None when the anchor declared no distances.
     wrap_distances: Optional[Dict[str, int]] = None
+    # Wrap polygon from wp:wrapPolygon/wp:start + wp:lineTo. Coordinates are in
+    # the OOXML normalized 21600x21600 coordinate space (relative to image extent).
+    # List of (x, y) tuples. None when no polygon or parsing failed.
+    wrap_polygon: Optional[List[Tuple[int, int]]] = None
     # Nearest-block association, filled by core.anchoring.associate_floating_images.
     # nearest_block_id references a Paragraph.block_id; confidence is 0..1.
     nearest_block_id: Optional[str] = None

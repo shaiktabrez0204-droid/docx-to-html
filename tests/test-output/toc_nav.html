@@ -6,41 +6,80 @@
   <title>Converted Document</title>
   <style>
     *{box-sizing:border-box}
-    html,body{margin:0;padding:0;height:100%;}
-    body{font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;background:#fff;overflow:hidden;}
-    .page-frame{display:flex;flex-direction:column;height:100vh;overflow:hidden;}
-    .viewer-title{padding:10px 16px 9px;border-bottom:1px solid #e5e7eb;background:#fff;flex-shrink:0;}
+    html,body{margin:0;padding:0;height:100%;overflow:hidden;}
+    body{font:14px/1.5 Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#111827;background:#fff;overflow:hidden;-webkit-font-smoothing:antialiased;}
+    .page-frame{display:flex;flex-direction:column;height:100vh;overflow:hidden;background:#fff;}
+    .viewer-header{height:52px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid #e5e7eb;background:rgba(255,255,255,.92);backdrop-filter:blur(10px) saturate(1.2);flex-shrink:0;z-index:8;}
+    .viewer-brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px;letter-spacing:-.01em;color:#0f172a;white-space:nowrap;flex-shrink:0;}
+    .viewer-brand-icon{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;background:linear-gradient(135deg,#5b5bf6,#8b5cf6);color:#fff;flex-shrink:0;}
+    .viewer-docname{flex:1;min-width:0;text-align:center;font-size:13px;font-weight:600;color:#1f2937;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 12px;}
+    .viewer-actions{display:flex;align-items:center;gap:6px;flex-shrink:0;}
+    .viewer-action{appearance:none;border:1px solid #e5e7eb;background:#fff;color:#374151;cursor:pointer;width:32px;height:32px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;transition:all .15s;}
+    .viewer-action:hover{background:#f9fafb;border-color:#d1d5db;transform:translateY(-1px);box-shadow:0 1px 6px rgba(0,0,0,.06);}
+    .viewer-action:focus-visible{outline:2px solid #6366f1;outline-offset:2px;}
+    .viewer-action.primary{border-color:#6366f1;background:#6366f1;color:#fff;}
+    .viewer-action.primary:hover{background:#4f46e5;}
+    .viewer-title{padding:8px 16px 8px;border-bottom:1px solid #f3f4f6;background:#fff;flex-shrink:0;}
     .viewer-title .doc-title{margin:0;font-size:14px;font-weight:600;line-height:1.4;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .viewer{display:flex;flex:1;min-height:0;overflow:hidden;}
-    .viewer-sidebar{width:280px;min-width:280px;max-width:280px;background:#fcfcfc;border-right:1px solid #e5e7eb;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;transition:width .18s ease,min-width .18s ease,opacity .18s ease,transform .18s ease;}
+    .viewer{display:flex;flex:1;min-height:0;overflow:hidden;background:#f3f4f6;}
+    .viewer-sidebar{width:280px;min-width:280px;max-width:280px;background:#fff;border-right:1px solid #e5e7eb;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;transition:width .22s cubic-bezier(.2,.8,.2,1),min-width .22s cubic-bezier(.2,.8,.2,1),opacity .18s ease,transform .22s ease;}
     .viewer.viewer--sidebar-collapsed .viewer-sidebar{width:0;min-width:0;max-width:0;border-right-width:0;opacity:0;pointer-events:none;transform:translateX(-8px);overflow:hidden;}
-    .sidebar-header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #e5e7eb;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#374151;white-space:nowrap;flex-shrink:0;}
+    .sidebar-header{display:flex;align-items:center;gap:8px;padding:10px 12px 8px;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#6b7280;white-space:nowrap;flex-shrink:0;}
     .sidebar-title{flex:1;overflow:hidden;text-overflow:ellipsis;}
-    .toc{flex:1;overflow-y:auto;overflow-x:hidden;padding:8px;}
+    .sidebar-header-actions{display:flex;gap:4px;}
+    .toc-search-wrap{padding:0 10px 8px;flex-shrink:0;}
+    .toc-search{position:relative;}
+    .toc-search input{width:100%;padding:7px 28px 7px 30px;font-size:13px;line-height:1;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;color:#111827;outline:none;transition:border-color .15s,box-shadow .15s,background .15s;}
+    .toc-search input::placeholder{color:#9ca3af;}
+    .toc-search input:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.12);background:#fff;}
+    .toc-search-icon{position:absolute;left:8px;top:50%;transform:translateY(-50%);color:#9ca3af;pointer-events:none;}
+    .toc-search-clear{position:absolute;right:6px;top:50%;transform:translateY(-50%);appearance:none;border:0;background:transparent;color:#9ca3af;cursor:pointer;width:20px;height:20px;border-radius:6px;display:none;align-items:center;justify-content:center;}
+    .toc-search-clear.visible{display:inline-flex;}
+    .toc-search-clear:hover{background:#f3f4f6;color:#374151;}
+    .toc-no-results{padding:14px 10px;color:#9ca3af;font-size:13px;text-align:center;display:none;}
+    .toc-no-results.visible{display:block;}
+    .toc{flex:1;overflow-y:auto;overflow-x:hidden;padding:4px 8px 12px;scrollbar-width:thin;}
     .toc-empty{color:#888;font-size:13px;padding:12px;}
     .toc-tree{list-style:none;margin:0;padding:0;}
     .toc-tree ul{list-style:none;margin:0;padding-left:14px;}
     .toc-row{display:flex;align-items:center;gap:2px;}
-    .toc-link{flex:1;display:block;padding:4px 6px;font-size:13px;color:#374151;text-decoration:none;border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    .toc-link:hover{background:#eef1f5;color:#111;}
-    .toc-link.is-active{background:#dbeafe;color:#1d4ed8;font-weight:600;}
-    .toc-link:focus-visible{outline:2px solid #2563eb;outline-offset:1px;}
+    .toc-link{flex:1;display:block;padding:5px 8px;font-size:13px;line-height:1.35;color:#374151;text-decoration:none;border-radius:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:background .12s,color .12s,transform .12s;}
+    .toc-link:hover{background:#f3f4f6;color:#111827;}
+    .toc-link.is-active{background:#eef2ff;color:#3730a3;font-weight:600;box-shadow:inset 3px 0 0 #6366f1;}
+    .toc-link:focus-visible{outline:2px solid #6366f1;outline-offset:1px;}
+    .toc-link.is-search-hidden{display:none;}
+    .toc-mark{background:#fef08a;color:#854d0e;padding:1px 2px;border-radius:3px;font-weight:600;}
     .toc-parent{margin:1px 0;}
     .toc-parent.is-collapsed>ul.toc-children{display:none;}
-    .toc-toggle{appearance:none;border:0;background:transparent;cursor:pointer;width:20px;height:20px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;font-size:10px;color:#6b7280;border-radius:3px;transition:transform .15s;}
-    .toc-toggle::before{content:"\25BC";display:block;font-size:9px;transition:transform .15s;}
+    .toc-parent.is-search-hidden{display:none;}
+    .toc-toggle{appearance:none;border:0;background:transparent;cursor:pointer;width:22px;height:22px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;font-size:10px;color:#9ca3af;border-radius:6px;transition:all .15s;}
+    .toc-toggle::before{content:"▾";display:block;font-size:10px;transition:transform .18s;}
     .toc-parent.is-collapsed>.toc-row .toc-toggle::before{transform:rotate(-90deg);}
-    .toc-toggle:hover{background:#e5e7eb;color:#111;}
-    .toc-toggle:focus-visible{outline:2px solid #2563eb;}
-    .toc-leaf{padding-left:22px;}
-    .doc-main{flex:1;overflow-y:auto;overflow-x:hidden;background:#efefef;padding:0;display:flex;flex-direction:column;align-items:center;min-width:0;}
-    .doc-toolbar{position:sticky;top:0;z-index:5;width:100%;max-width:860px;display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(239,239,239,.92);backdrop-filter:blur(6px);}
-    .sidebar-toggle-main{appearance:none;border:1px solid #d1d5db;background:#fff;cursor:pointer;padding:6px 10px;border-radius:6px;font-size:13px;line-height:1;display:inline-flex;align-items:center;gap:6px;color:#374151;box-shadow:0 1px 2px rgba(0,0,0,.06);}
-    .sidebar-toggle-main:hover{background:#f3f4f6;}
-    .sidebar-toggle-main:focus-visible{outline:2px solid #2563eb;outline-offset:2px;}
-    .docx-page{background:#fff;margin:16px auto 40px;box-shadow:0 1px 6px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);width:100%;max-width:860px;position:relative;flex-shrink:0;box-sizing:border-box;}
+    .toc-toggle:hover{background:#f3f4f6;color:#374151;}
+    .toc-toggle:focus-visible{outline:2px solid #6366f1;}
+    .toc-leaf{padding-left:24px;}
+    .toc-leaf.is-search-hidden{display:none;}
+    .doc-main{flex:1;overflow-y:auto;overflow-x:hidden;background:#f1f2f4;padding:0;display:flex;flex-direction:column;align-items:center;min-width:0;scroll-behavior:smooth;}
+    .doc-toolbar{position:sticky;top:0;z-index:5;width:100%;max-width:860px;display:flex;align-items:center;gap:8px;padding:10px 16px;background:rgba(241,242,244,.92);backdrop-filter:blur(8px);flex-shrink:0;}
+    .focus-banner{width:100%;max-width:860px;margin:0 auto;padding:10px 16px 8px;display:none;align-items:center;gap:10px;}
+    .focus-banner.visible{display:flex;animation:fadeIn .18s ease;}
+    .focus-banner-inner{flex:1;display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border:1px solid #e0e7ff;border-radius:12px;box-shadow:0 4px 18px rgba(99,102,241,.08);}
+    .focus-banner-kicker{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#6366f1;white-space:nowrap;}
+    .focus-banner-title{flex:1;min-width:0;font-size:13px;font-weight:600;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .focus-banner-clear{appearance:none;border:1px solid #e5e7eb;background:#fff;color:#374151;cursor:pointer;padding:6px 10px;border-radius:999px;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px;transition:all .15s;white-space:nowrap;}
+    .focus-banner-clear:hover{background:#f9fafb;border-color:#d1d5db;}
+    .focus-banner-close{appearance:none;border:0;background:transparent;color:#9ca3af;cursor:pointer;width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;}
+    .focus-banner-close:hover{background:#f3f4f6;color:#374151;}
+    .sidebar-toggle-main{appearance:none;border:1px solid #e5e7eb;background:#fff;cursor:pointer;padding:7px 12px;border-radius:8px;font-size:13px;line-height:1;display:inline-flex;align-items:center;gap:6px;color:#374151;box-shadow:0 1px 2px rgba(0,0,0,.05);transition:all .15s;}
+    .sidebar-toggle-main:hover{background:#f9fafb;transform:translateY(-1px);box-shadow:0 4px 10px rgba(0,0,0,.06);}
+    .sidebar-toggle-main:focus-visible{outline:2px solid #6366f1;outline-offset:2px;}
+    .docx-page{background:#fff;margin:12px auto 48px;box-shadow:0 8px 32px rgba(15,23,42,.08),0 0 0 1px rgba(15,23,42,.04);width:100%;max-width:860px;position:relative;flex-shrink:0;box-sizing:border-box;border-radius:10px;overflow:hidden;transition:transform .22s ease,opacity .18s ease;}
     .docx-page[style]{max-width:min(860px,calc(100% - 32px)) !important;}
+    .docx-block{transition:opacity .18s ease,transform .18s ease;}
     .docx-block.is-hidden{display:none !important;}
+    .docx-block.is-entering{animation:docFadeIn .22s ease both;}
+    @keyframes docFadeIn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:translateY(0);}}
     .docx-float-wrap.is-hidden{display:none !important;}
     .docx-float-wrap{position:static;}
     .docx-para-float-wrap.is-hidden{display:none !important;}
@@ -48,7 +87,7 @@
     img[data-anchor].is-hidden{display:none !important;}
     img.docx-float.is-hidden, img.docx-float-wrapped.is-hidden{display:none !important;}
     .docx-hf-float-wrap{position:static;}
-    #exit-focus{margin-left:8px;}
+    #exit-focus{margin-left:auto;}
     button.sidebar-toggle-main[hidden]{display:none !important;}
     .docx-content{box-sizing:border-box;max-width:100%;overflow-wrap:break-word;font-size:11.0pt;}
     img.docx-float{position:absolute;}
@@ -64,9 +103,9 @@
     .docx-ordered-list{list-style:none;padding-left:0;}
     .docx-bullet-list{list-style:none;padding-left:0;}
     table.docx-table{border-collapse:collapse;width:100%;margin:1em 0;}
-    table.docx-table td,table.docx-table th{border:1px solid #999;padding:6px 8px;vertical-align:top;word-wrap:break-word;}
+    table.docx-table td,table.docx-table th{border:1px solid #d1d5db;padding:6px 8px;vertical-align:top;word-wrap:break-word;}
     table.docx-table td p{margin:0;}
-    header.docx-header,footer.docx-footer{border:1px dashed #bbb;padding:6px 8px;margin:6px 0;background:#fafafa;}
+    header.docx-header,footer.docx-footer{border:1px dashed #cbd5e1;padding:6px 8px;margin:6px 0;background:#f8fafc;}
     header.docx-header p,footer.docx-footer p{margin:0; position:relative; min-height:1.2em;}
     .docx-tab{display:inline-block;width:48px;}
     .docx-tab-leader{position:absolute; height:0; pointer-events:none;}
@@ -75,23 +114,45 @@
     .docx-page-number::after{content:"[PAGE]";}
     .docx-num-pages::after{content:"[NUMPAGES]";}
     .docx-page-ref::after{content:"[PAGEREF]";}
-    .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.32);z-index:15;}
-    @media (max-width:780px){.viewer-sidebar{position:fixed;left:0;top:0;bottom:0;z-index:20;width:280px;min-width:280px;max-width:280px;transform:translateX(-100%);transition:transform .22s ease;opacity:1;pointer-events:auto;border-right:1px solid #e5e7eb;}
+    .sidebar-overlay{position:fixed;inset:0;background:rgba(15,23,42,.32);backdrop-filter:blur(2px);z-index:15;opacity:0;visibility:hidden;transition:opacity .18s,visibility .18s;}
+    .sidebar-overlay.visible{opacity:1;visibility:visible;}
+    @media (max-width:780px){.viewer-sidebar{position:fixed;left:0;top:0;bottom:0;z-index:20;width:280px;min-width:280px;max-width:280px;transform:translateX(-100%);transition:transform .24s cubic-bezier(.2,.8,.2,1);opacity:1;pointer-events:auto;border-right:1px solid #e5e7eb;box-shadow:12px 0 40px rgba(15,23,42,.12);}
     .viewer.viewer--mobile-open .viewer-sidebar{transform:translateX(0);}
-    .viewer.viewer--sidebar-collapsed .viewer-sidebar{width:280px;min-width:280px;max-width:280px;opacity:1;pointer-events:auto;transform:translateX(-100%);border-right-width:1px;}
+    .viewer.viewer--sidebar-collapsed .viewer-sidebar{width:280px;min-width:280px;max-width:280px;opacity:1;pointer-events:auto;transform:translateX(-100%);border-right-width:1px;box-shadow:12px 0 40px rgba(15,23,42,.12);}
     .viewer.viewer--mobile-open.viewer--sidebar-collapsed .viewer-sidebar{transform:translateX(0);}
+    .viewer-header{padding:0 10px;gap:8px;}
+    .viewer-docname{font-size:12px;padding:0 6px;}
     .doc-main{padding-top:0;}}
-    @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
+    @media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important;scroll-behavior:auto!important;}}
   </style>
 </head>
 <body>
 <div class="page-frame">
+<header class="viewer-header" role="banner">
+  <div class="viewer-brand"><span class="viewer-brand-icon" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span> DOCX → HTML</div>
+  <div class="viewer-docname" id="viewer-docname" title="Converted Document">Converted Document</div>
+  <div class="viewer-actions">
+    <button id="header-search" class="viewer-action" aria-label="Search headings" title="Search (Ctrl+K)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></button>
+    <button id="header-toc" class="viewer-action" aria-label="Toggle outline" aria-controls="viewer-sidebar" aria-expanded="true" title="Toggle outline"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/></svg></button>
+    <button id="viewer-download" class="viewer-action primary" aria-label="Download HTML" title="Download HTML"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/></svg></button>
+  </div>
+</header>
+
 <header class="viewer-title"><h1 id="h1-introduction" class="doc-title">Introduction</h1></header>
 <div class="viewer">
 <aside id="viewer-sidebar" class="viewer-sidebar" aria-label="Document Outline">
   <div class="sidebar-header">
     <span class="sidebar-title">Document Outline</span>
+    <span class="sidebar-header-actions"><button id="sidebar-collapse" class="viewer-action" aria-label="Collapse outline" title="Collapse"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 18l-6-6 6-6"/></svg></button></span>
   </div>
+  <div class="toc-search-wrap">
+    <label class="toc-search" aria-label="Search headings">
+      <span class="toc-search-icon" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></span>
+      <input id="toc-search" type="search" placeholder="Search headings..." autocomplete="off" spellcheck="false" aria-label="Search headings">
+      <button id="toc-search-clear" class="toc-search-clear" aria-label="Clear search" type="button"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
+    </label>
+  </div>
+  <div id="toc-no-results" class="toc-no-results" role="status" aria-live="polite">No headings found</div>
   <nav class="toc" aria-label="Table of Contents">
 <ul class="toc-tree" role="tree"><li class="toc-parent" role="treeitem" aria-expanded="true" data-level="1"><div class="toc-row"><button class="toc-toggle" aria-expanded="true" aria-controls="toc-h1-introduction" aria-label="Toggle section"></button><a class="toc-link" href="#h1-introduction" data-level="1">Introduction</a></div><ul id="toc-h1-introduction" class="toc-children" role="group"><ul class="toc-tree" role="tree"><li class="toc-parent" role="treeitem" aria-expanded="true" data-level="2"><div class="toc-row"><button class="toc-toggle" aria-expanded="true" aria-controls="toc-h2-architecture" aria-label="Toggle section"></button><a class="toc-link" href="#h2-architecture" data-level="2">Architecture</a></div><ul id="toc-h2-architecture" class="toc-children" role="group"><ul class="toc-tree" role="tree"><li class="toc-leaf" role="treeitem" data-level="3"><a class="toc-link" href="#h3-data-model" data-level="3">Data Model</a></li></ul></ul></li><li class="toc-leaf" role="treeitem" data-level="2"><a class="toc-link" href="#h2-implementation" data-level="2">Implementation</a></li></ul></ul></li><li class="toc-leaf" role="treeitem" data-level="1"><a class="toc-link" href="#h1-conclusion" data-level="1">Conclusion</a></li></ul>
   </nav>
@@ -102,7 +163,15 @@
   <button id="sidebar-toggle" class="sidebar-toggle-main" aria-expanded="true" aria-controls="viewer-sidebar" aria-label="Toggle outline">
     <span aria-hidden="true">&#9776;</span> <span>Outline</span>
   </button>
-  <button id="exit-focus" class="sidebar-toggle-main" type="button" hidden>&#8592; All document</button>
+  <div id="focus-banner" class="focus-banner" role="status" aria-live="polite">
+    <div class="focus-banner-inner">
+      <span class="focus-banner-kicker">Viewing</span>
+      <span id="focus-banner-title" class="focus-banner-title"></span>
+      <button id="focus-banner-clear" class="focus-banner-clear" type="button">Show Full Document</button>
+      <button id="focus-banner-close" class="focus-banner-close" type="button" aria-label="Close focus"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
+    </div>
+  </div>
+  <button id="exit-focus" class="sidebar-toggle-main" type="button" hidden>Show Full Document</button>
 </div>
 <div class="docx-page" style="position: relative; width: 816px; max-width: calc(100% - 32px); min-height: 1056px; box-sizing: border-box;">
 <div class="docx-content" style="position: relative; margin-left: 96px; margin-top: 96px; width: 624px; max-width: calc(100% - 112px); min-height: 864px; box-sizing: border-box;">
@@ -137,21 +206,24 @@
     function setSidebarOpen(open){
       if(isMobile()){
         viewer.classList.toggle('viewer--mobile-open',open);
-        overlay.hidden=!open;
+        if(open){ overlay.hidden=false; overlay.classList.add('visible'); } else { overlay.classList.remove('visible'); setTimeout(function(){ if(!viewer.classList.contains('viewer--mobile-open')) overlay.hidden=true; },180); }
         viewer.classList.toggle('viewer--sidebar-collapsed',!open);
       } else {
         viewer.classList.toggle('viewer--sidebar-collapsed',!open);
         viewer.classList.remove('viewer--mobile-open');
-        overlay.hidden=true;
+        overlay.hidden=true; overlay.classList.remove('visible');
       }
       toggle.setAttribute('aria-expanded',String(open));
       toggle.setAttribute('aria-label',open?'Close outline':'Open outline');
+      var ht=document.getElementById('header-toc'); if(ht){ ht.setAttribute('aria-expanded',String(open)); }
     }
     function isSidebarOpen(){
       if(isMobile()) return viewer.classList.contains('viewer--mobile-open');
       return !viewer.classList.contains('viewer--sidebar-collapsed');
     }
     toggle.addEventListener('click',function(){setSidebarOpen(!isSidebarOpen());});
+    var headerToc=document.getElementById('header-toc'); if(headerToc) headerToc.addEventListener('click',function(){setSidebarOpen(!isSidebarOpen());});
+    var sideCollapse=document.getElementById('sidebar-collapse'); if(sideCollapse) sideCollapse.addEventListener('click',function(){setSidebarOpen(false);});
     overlay.addEventListener('click',function(){setSidebarOpen(false);});
     document.addEventListener('keydown',function(e){if(e.key==='Escape'&&isMobile()&&isSidebarOpen()) setSidebarOpen(false);});
     setSidebarOpen(!isMobile());
@@ -203,14 +275,30 @@
     }
     var currentFocus=null;
     var exitBtn=document.getElementById('exit-focus');
-    function showExit(on){ if(exitBtn) exitBtn.hidden=!on; }
+    var focusBanner=document.getElementById('focus-banner');
+    var focusBannerTitle=document.getElementById('focus-banner-title');
+    var focusClear=document.getElementById('focus-banner-clear');
+    var focusClose=document.getElementById('focus-banner-close');
+    function showExit(on, title){
+      if(exitBtn) exitBtn.hidden=!on;
+      if(focusBanner){
+        if(on){ focusBanner.classList.add('visible'); if(focusBannerTitle && title) focusBannerTitle.textContent=title; }
+        else { focusBanner.classList.remove('visible'); }
+      }
+    }
+    function getHeadingText(id){
+      var a=linkById[id]; if(a) return a.textContent.trim();
+      var h=document.getElementById(id); if(h) return h.textContent.trim();
+      return id;
+    }
     function clearFocus(){
       var bs=docMain.querySelectorAll('.docx-block');
-      for(var i=0;i<bs.length;i++){ bs[i].classList.remove('is-hidden'); }
+      for(var i=0;i<bs.length;i++){ bs[i].classList.remove('is-hidden'); bs[i].classList.remove('is-entering'); }
       var fs=docMain.querySelectorAll('.docx-float-wrap, .docx-para-float-wrap, img[data-anchor]');
       for(var i=0;i<fs.length;i++){ fs[i].classList.remove('is-hidden'); }
       showExit(false);
       currentFocus=null;
+      docMain.scrollTop=0;
     }
     function focusHeading(id){
       if(!id) return;
@@ -222,20 +310,22 @@
       if(id===titleId){ startIdx=-1; }
       else { for(var i=0;i<blocks.length;i++){ if(blocks[i].getAttribute('data-heading-id')===id){ startIdx=i; break; } } }
       if(startIdx===-2) return;
-      for(var i=0;i<blocks.length;i++){ blocks[i].classList.add('is-hidden'); }
+      for(var i=0;i<blocks.length;i++){ blocks[i].classList.add('is-hidden'); blocks[i].classList.remove('is-entering'); }
+      var visible=[];
       if(startIdx===-1){
         for(var i=0;i<blocks.length;i++){
           var l=parseInt(blocks[i].getAttribute('data-level')||'0',10);
           if(i>0 && l && l<=level) break;
-          blocks[i].classList.remove('is-hidden');
+          blocks[i].classList.remove('is-hidden'); visible.push(blocks[i]);
         }
       } else {
         for(var i=startIdx;i<blocks.length;i++){
           var l=parseInt(blocks[i].getAttribute('data-level')||'0',10);
           if(i>startIdx && l && l<=level) break;
-          blocks[i].classList.remove('is-hidden');
+          blocks[i].classList.remove('is-hidden'); visible.push(blocks[i]);
         }
       }
+      for(var vi=0; vi<visible.length; vi++){ (function(el,idx){ requestAnimationFrame(function(){ el.classList.add('is-entering'); }); })(visible[vi], vi); }
       var floats=docMain.querySelectorAll('.docx-float-wrap, .docx-para-float-wrap, img[data-anchor]');
       for(var f=0;f<floats.length;f++){
         var aStr=floats[f].getAttribute('data-anchor');
@@ -249,7 +339,7 @@
         if(blocks[a].classList.contains('is-hidden')) floats[f].classList.add('is-hidden');
         else floats[f].classList.remove('is-hidden');
       }
-      showExit(true);
+      showExit(true, getHeadingText(id));
       docMain.scrollTop=0;
       currentFocus=id;
     }
@@ -301,11 +391,78 @@
         history.pushState({focusId:null},'',location.pathname+location.search);
       });
     }
+    if(focusClear) focusClear.addEventListener('click',function(){ clearFocus(); history.pushState({focusId:null},'',location.pathname+location.search); });
+    if(focusClose) focusClose.addEventListener('click',function(){ clearFocus(); history.pushState({focusId:null},'',location.pathname+location.search); });
     window.addEventListener('popstate',function(e){
       var st=e.state;
       if(st && st.focusId){ focusHeading(st.focusId); setActive(st.focusId); }
       else { clearFocus(); }
     });
+    var tocSearch=document.getElementById('toc-search');
+    var tocClear=document.getElementById('toc-search-clear');
+    var tocNoResults=document.getElementById('toc-no-results');
+    var headerSearch=document.getElementById('header-search');
+    var viewerDownload=document.getElementById('viewer-download');
+    var tocLinksCache=null; var tocListItemsCache=null; var origLinkHTML={};
+    function ensureCache(){ if(tocLinksCache) return; tocLinksCache=Array.prototype.slice.call(document.querySelectorAll('a.toc-link')); tocListItemsCache=Array.prototype.slice.call(document.querySelectorAll('.toc-tree li')); tocLinksCache.forEach(function(a){ origLinkHTML[a.getAttribute('href')] = a.innerHTML; }); }
+    function escapeReg(s){ return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
+    var searchTimer=null;
+    function doSearch(q){
+      ensureCache();
+      var query=(q||'').trim().toLowerCase();
+      if(tocClear) tocClear.classList.toggle('visible', !!query);
+      if(!query){
+        tocLinksCache.forEach(function(a){ a.innerHTML=origLinkHTML[a.getAttribute('href')]||a.innerHTML; a.classList.remove('is-search-hidden'); var li=a.closest('li'); if(li) li.classList.remove('is-search-hidden'); });
+        tocListItemsCache.forEach(function(li){ li.classList.remove('is-search-hidden'); });
+        document.querySelectorAll('.toc-parent.is-collapsed-search').forEach(function(el){ el.classList.remove('is-collapsed-search'); });
+        if(tocNoResults) tocNoResults.classList.remove('visible');
+        return;
+      }
+      var re=new RegExp('('+escapeReg(query)+')','gi');
+      var anyMatch=false;
+      var matchedIds={};
+      tocLinksCache.forEach(function(a){
+        var text=a.textContent||'';
+        var isMatch=text.toLowerCase().indexOf(query)!==-1;
+        if(isMatch){
+          anyMatch=true; matchedIds[a.getAttribute('href')]=true;
+          var orig=origLinkHTML[a.getAttribute('href')]||a.innerHTML;
+          a.innerHTML=orig.replace(re,'<mark class="toc-mark">$1</mark>');
+        } else {
+          a.innerHTML=origLinkHTML[a.getAttribute('href')]||a.innerHTML;
+        }
+      });
+      tocLinksCache.forEach(function(a){
+        var li=a.closest('li');
+        var isDirect=!!matchedIds[a.getAttribute('href')];
+        var hasDescendant=false;
+        if(!isDirect){
+          var ul=li.querySelector('ul');
+          if(ul){ var descLinks=ul.querySelectorAll('a.toc-link'); for(var i=0;i<descLinks.length;i++){ if(matchedIds[descLinks[i].getAttribute('href')]){ hasDescendant=true; break; } } }
+        }
+        var shouldShow=isDirect || hasDescendant;
+        if(li) li.classList.toggle('is-search-hidden', !shouldShow);
+        a.classList.toggle('is-search-hidden', !isDirect && !hasDescendant);
+      });
+      if(anyMatch){
+        document.querySelectorAll('.toc-parent').forEach(function(li){
+          var ul=li.querySelector('ul.toc-children');
+          if(!ul) return;
+          var hasVisible=!!li.querySelector('a.toc-link:not(.is-search-hidden)');
+          if(hasVisible){ li.classList.remove('is-collapsed'); li.setAttribute('aria-expanded','true'); var btn=li.querySelector(':scope > .toc-row > .toc-toggle'); if(btn){ btn.setAttribute('aria-expanded','true'); } ul.hidden=false; }
+        });
+      }
+      if(tocNoResults) tocNoResults.classList.toggle('visible', !anyMatch);
+    }
+    if(tocSearch){
+      tocSearch.addEventListener('input', function(){ clearTimeout(searchTimer); var v=this.value; searchTimer=setTimeout(function(){ doSearch(v); },150); });
+      tocSearch.addEventListener('keydown', function(e){ if(e.key==='Escape'){ this.value=''; doSearch(''); this.blur(); } });
+      if(tocClear) tocClear.addEventListener('click', function(){ tocSearch.value=''; doSearch(''); tocSearch.focus(); });
+    }
+    document.addEventListener('keydown', function(e){ if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='k'){ var ae=document.activeElement; if(ae && (ae.tagName==='INPUT' || ae.tagName==='TEXTAREA')) return; e.preventDefault(); if(!isSidebarOpen()) setSidebarOpen(true); setTimeout(function(){ if(tocSearch) tocSearch.focus(); },80); } });
+    document.addEventListener('keydown', function(e){ if(e.key==='Escape'){ var q=tocSearch?tocSearch.value:''; if(q){ tocSearch.value=''; doSearch(''); } else if(currentFocus){ clearFocus(); history.pushState({focusId:null},'',location.pathname+location.search); } } });
+    if(headerSearch) headerSearch.addEventListener('click', function(){ if(!isSidebarOpen()) setSidebarOpen(true); setTimeout(function(){ if(tocSearch) tocSearch.focus(); },80); });
+    if(viewerDownload) viewerDownload.addEventListener('click', function(){ try{ var htmlStr='<!DOCTYPE html>\n'+document.documentElement.outerHTML; var b=new Blob([htmlStr],{type:'text/html'}); var a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=(document.title||'document')+'.html'; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },1000); }catch(err){ window.print(); } });
     function layoutDecimalTabs(){
       document.querySelectorAll('.docx-tab-segment[data-val="decimal"]').forEach(function(seg){
         var pos=parseInt(seg.getAttribute('data-pos'),10);
