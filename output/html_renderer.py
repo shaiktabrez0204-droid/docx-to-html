@@ -31,8 +31,9 @@ import base64
 import html
 from typing import Optional, List, Tuple
 
-from core.model import Run, Paragraph, Table, Row, Cell, BorderEdge, HeaderFooter, Section, Image, ImageAsset, PageLayout, format_numbering_label
+from core.model import Run, Paragraph, Table, Row, Cell, BorderEdge, HeaderFooter, Section, Image, ImageAsset, PageLayout, Note, NoteReference, CommentRangeStart, CommentRangeEnd, format_numbering_label
 from core.units import emu_to_px, twip_to_emu
+from collections import Counter
 
 # The document's effective default font size, in OOXML half-points. Runs whose
 # resolved size equals this default need no inline font-size (the .docx-content
@@ -54,9 +55,24 @@ _BROWSER_SAFE_MIME = {
 # Coordinates that resolve against the full page box (-> absolute in .docx-page).
 _PAGE_COORDS = {"page"}
 # Coordinates that resolve against the margin/content box (-> absolute in .docx-content).
-_CONTENT_COORDS = {"margin", "column"}
+_CONTENT_COORDS = {"margin"}
+_COLUMN_COORDS = {"column"}
 # Coordinates that resolve against the anchor paragraph (-> absolute in <p>).
-_PARAGRAPH_COORDS = {"paragraph", "character"}
+_PARAGRAPH_COORDS = {"paragraph", "character", "line"}
+
+_CURRENT_SECTIONS = None
+_FOOTNOTE_TOTALS: Counter = Counter()
+_FOOTNOTE_CUR: dict = {}
+_ENDNOTE_TOTALS: Counter = Counter()
+_ENDNOTE_CUR: dict = {}
+_COMMENT_TOTALS: Counter = Counter()
+_COMMENT_CUR: dict = {}
+_FOOTNOTE_REF_IDS: dict = {}
+_ENDNOTE_REF_IDS: dict = {}
+_COMMENT_REF_IDS: dict = {}
+_COMMENT_RANGE_LOGICAL: List[str] = []
+_COMMENT_VALID_IDS: set = set()
+_COMMENT_RANGE_VALID_IDS: set = set()
 
 # Alignment values that map to a horizontal float direction.
 _LEFT_ALIGN = {"left", "inside"}
@@ -81,6 +97,74 @@ _OOXML_BORDER_STYLE = {
     "nil": None,
     "none": None,
 }
+
+def _collect_note_totals(blocks) -> tuple:
+    fn = Counter()
+    en = Counter()
+    cm = Counter()
+    def _scan_paragraph(para):
+        for item in (para.content or para.runs):
+            if isinstance(item, NoteReference):
+                if item.note_type == "footnote":
+                    fn[item.note_id] += 1
+                elif item.note_type == "endnote":
+                    en[item.note_id] += 1
+                elif item.note_type == "comment":
+                    cm[item.note_id] += 1
+    for b in blocks or []:
+        if isinstance(b, Paragraph):
+            _scan_paragraph(b)
+        elif isinstance(b, Table):
+            for row in b.rows:
+                for cell in row.cells:
+                    for p in cell.content:
+                        _scan_paragraph(p)
+    return fn, en, cm
+
+def _footnote_ref_html(ref: NoteReference) -> str:
+    nid = str(ref.note_id)
+    nid_esc = html.escape(nid, quote=True)
+    nid_text = html.escape(nid)
+    total = _FOOTNOTE_TOTALS.get(nid, 1)
+    cur = _FOOTNOTE_CUR.get(nid, 0) + 1
+    _FOOTNOTE_CUR[nid] = cur
+    if total > 1:
+        ref_id = f"footnote-ref-{nid_esc}-{cur}"
+    else:
+        ref_id = f"footnote-ref-{nid_esc}"
+    href = f"footnote-{nid_esc}"
+    _FOOTNOTE_REF_IDS.setdefault(nid, []).append(ref_id)
+    return f'<sup class="docx-footnote-ref"><a href="#{href}" id="{ref_id}">{nid_text}</a></sup>'
+
+def _endnote_ref_html(ref: NoteReference) -> str:
+    nid = str(ref.note_id)
+    nid_esc = html.escape(nid, quote=True)
+    nid_text = html.escape(nid)
+    total = _ENDNOTE_TOTALS.get(nid, 1)
+    cur = _ENDNOTE_CUR.get(nid, 0) + 1
+    _ENDNOTE_CUR[nid] = cur
+    if total > 1:
+        ref_id = f"endnote-ref-{nid_esc}-{cur}"
+    else:
+        ref_id = f"endnote-ref-{nid_esc}"
+    href = f"endnote-{nid_esc}"
+    _ENDNOTE_REF_IDS.setdefault(nid, []).append(ref_id)
+    return f'<sup class="docx-endnote-ref"><a href="#{href}" id="{ref_id}">{nid_text}</a></sup>'
+
+def _comment_ref_html(ref: NoteReference) -> str:
+    nid = str(ref.note_id)
+    nid_esc = html.escape(nid, quote=True)
+    nid_text = html.escape(nid)
+    total = _COMMENT_TOTALS.get(nid, 1)
+    cur = _COMMENT_CUR.get(nid, 0) + 1
+    _COMMENT_CUR[nid] = cur
+    if total > 1:
+        ref_id = f"comment-ref-{nid_esc}-{cur}"
+    else:
+        ref_id = f"comment-ref-{nid_esc}"
+    href = f"comment-{nid_esc}"
+    _COMMENT_REF_IDS.setdefault(nid, []).append(ref_id)
+    return f'<sup class="docx-comment-ref"><a href="#{href}" id="{ref_id}">{nid_text}</a></sup>'
 
 def _border_edge_to_css(edge) -> Optional[str]:
     if edge is None:
@@ -204,6 +288,10 @@ def render_image(img: Image, assets: Optional[dict] = None) -> str:
         attrs.append('width="%d"' % img.width)
     if img.height:
         attrs.append('height="%d"' % img.height)
+    rot = getattr(img, "rotation", None)
+    if rot is not None:
+        deg = rot / 60000.0
+        attrs.append('style="transform: rotate(%gdeg)"' % deg)
     attrs.append(alt_attr)
     attrs.append('class="docx-image"')
     return "<img %s>" % " ".join(attrs)
@@ -216,17 +304,66 @@ def _float_container(img: Image) -> str:
     """Pick the CSS containing block for a floating image's coordinates.
 
     Uses the most *outer* relativeFrom present so a mixed page/margin anchor
-    resolves consistently. Returns "page" | "content" | "paragraph".
+    resolves consistently. Returns "page" | "content" | "column" | "paragraph".
     """
     coords = {img.relative_from_horizontal, img.relative_from_vertical}
     if coords & _PAGE_COORDS:
         return "page"
+    if coords & _COLUMN_COORDS:
+        return "column"
     if coords & _CONTENT_COORDS:
         return "content"
     if coords & _PARAGRAPH_COORDS:
         return "paragraph"
-    # Default: page-relative (most common anchor intent).
     return "page"
+
+def _h_container(img: Image) -> str:
+    rf = img.relative_from_horizontal
+    if rf in _PAGE_COORDS:
+        return "page"
+    if rf in _COLUMN_COORDS:
+        return "column"
+    if rf in _CONTENT_COORDS:
+        return "content"
+    if rf in _PARAGRAPH_COORDS:
+        return "paragraph"
+    return "page"
+
+def _v_container(img: Image) -> str:
+    rf = img.relative_from_vertical
+    if rf in _PAGE_COORDS:
+        return "page"
+    if rf in _COLUMN_COORDS:
+        return "column"
+    if rf in _CONTENT_COORDS:
+        return "content"
+    if rf in _PARAGRAPH_COORDS:
+        return "paragraph"
+    return "page"
+
+def _column_box_for_img(img: Image, fallback_page: PageLayout):
+    secs = _CURRENT_SECTIONS
+    layout = fallback_page
+    if secs is not None:
+        sec_idx = getattr(img, "section_index", None)
+        if sec_idx is not None and 0 <= sec_idx < len(secs):
+            layout = secs[sec_idx].page_layout or fallback_page
+    if layout is None:
+        layout = fallback_page
+    try:
+        boxes = layout.column_boxes_px()
+    except Exception:
+        return None
+    col_idx = getattr(img, "column_index", None)
+    if col_idx is None:
+        col_idx = 0
+    try:
+        col_idx = int(col_idx)
+    except Exception:
+        col_idx = 0
+    if 0 <= col_idx < len(boxes):
+        return boxes[col_idx]
+    return boxes[0] if boxes else None
 
 
 def _is_wrap_float(img: Image) -> bool:
@@ -279,18 +416,68 @@ def _wrap_polygon_to_css(polygon: Optional[List[Tuple[int, int]]]) -> Optional[s
     return "polygon(" + ", ".join("%s %s" % (x, y) for x, y in coords) + ")"
 
 
-def _float_style(img: Image, page: PageLayout, container: str) -> str:
-    """Build the CSS style string for a floating image (absolute or float)."""
+def _float_style(img: Image, page: PageLayout, container: str, is_hf: bool = False) -> str:
     style: dict = {}
-
-    # z-index derived solely from OOXML behindDoc: behind text -> -1, else 2.
     if img.behind_doc:
         style["z-index"] = "-1"
     else:
         style["z-index"] = "2"
-
     hoffs = emu_to_px(img.offset_horizontal)
     voffs = emu_to_px(img.offset_vertical)
+    is_col_h = img.relative_from_horizontal == "column"
+    is_col_v = img.relative_from_vertical == "column"
+    if is_col_h:
+        box = _column_box_for_img(img, page)
+        if box is not None:
+            col_left = box["left_px"]
+            col_w = box["width_px"]
+            halign = img.alignment_horizontal
+            if halign == "center":
+                style["position"] = "absolute"
+                style["left"] = f"{col_left + col_w // 2}px"
+                tx = "-50%"
+            elif halign in _RIGHT_ALIGN:
+                style["position"] = "absolute"
+                left_px = col_left + col_w - (img.width or 0) - hoffs if img.offset_horizontal is not None else col_left + col_w - (img.width or 0)
+                style["left"] = f"{left_px}px"
+                tx = "0"
+            elif halign in _LEFT_ALIGN:
+                style["position"] = "absolute"
+                style["left"] = f"{col_left + hoffs}px"
+                tx = "0"
+            else:
+                style["position"] = "absolute"
+                style["left"] = f"{col_left + hoffs}px"
+                tx = "0"
+            valign = img.alignment_vertical
+            if valign == "center":
+                style["top"] = "50%"
+                ty = "-50%"
+            elif valign in ("bottom", "outside"):
+                style["bottom"] = f"{voffs}px" if img.offset_vertical is not None else "0px"
+                ty = "0"
+            elif valign in ("top", "inside"):
+                style["top"] = f"{voffs}px" if img.offset_vertical is not None else "0px"
+                ty = "0"
+            else:
+                style["top"] = f"{voffs}px"
+                ty = "0"
+            if tx != "0" or ty != "0":
+                style["transform"] = f"translate({tx}, {ty})"
+            if img.width:
+                style["width"] = f"{img.width}px"
+            if img.height:
+                style["height"] = f"{img.height}px"
+            rot = getattr(img, "rotation", None)
+            if rot is not None:
+                deg = rot / 60000.0
+                existing = style.get("transform")
+                rot_str = f"rotate({deg:g}deg)"
+                if existing:
+                    style["transform"] = existing + " " + rot_str
+                else:
+                    style["transform"] = rot_str
+            return "; ".join(f"{k}: {v}" for k, v in style.items())
 
     if _is_top_bottom(img):
         halign = img.alignment_horizontal
@@ -420,16 +607,24 @@ def _float_style(img: Image, page: PageLayout, container: str) -> str:
         if tx != "0" or ty != "0":
             style["transform"] = "translate(%s, %s)" % (tx, ty)
 
-    # Displayed geometry comes from the anchor extent (DOCX intent).
     if img.width:
         style["width"] = "%dpx" % img.width
     if img.height:
         style["height"] = "%dpx" % img.height
+    rot = getattr(img, "rotation", None)
+    if rot is not None:
+        deg = rot / 60000.0
+        existing = style.get("transform")
+        rot_str = "rotate(%gdeg)" % deg
+        if existing:
+            style["transform"] = existing + " " + rot_str
+        else:
+            style["transform"] = rot_str
 
     return "; ".join("%s: %s" % (k, v) for k, v in style.items())
 
 
-def render_float_image(img: Image, assets: Optional[dict], page: PageLayout) -> str:
+def render_float_image(img: Image, assets: Optional[dict], page: PageLayout, is_hf: bool = False) -> str:
     """Render a floating image placement with positioning/wrap CSS."""
     alt_attr = ' alt="%s"' % html.escape(img.alt_text) if img.alt_text else ""
     aria = ' aria-label="%s"' % html.escape(img.alt_text) if img.alt_text else ""
@@ -439,7 +634,7 @@ def render_float_image(img: Image, assets: Optional[dict], page: PageLayout) -> 
         return '<span class="docx-float docx-image-missing" role="img"%s></span>' % aria
 
     container = _float_container(img)
-    style = _float_style(img, page, container)
+    style = _float_style(img, page, container, is_hf=is_hf)
     if _is_top_bottom(img) and (img.alignment_horizontal in _LEFT_ALIGN or img.alignment_horizontal in _RIGHT_ALIGN or img.alignment_horizontal == "center"):
         cls = "docx-float-topbottom"
     elif _is_wrap_float(img):
@@ -456,21 +651,110 @@ def render_float_image(img: Image, assets: Optional[dict], page: PageLayout) -> 
 
 
 def _render_items_segment(segment_items, assets, page, collected, is_hf=False):
-    """Render a list of Run/Image items (no tab) handling floats/hyperlinks."""
+    """Render a list of Run/Image/NoteReference items handling floats/hyperlinks and comment ranges."""
+    global _COMMENT_RANGE_LOGICAL, _COMMENT_VALID_IDS, _COMMENT_RANGE_VALID_IDS
     parts = []
     needs_relative = False
+    emitted: List[str] = []
+    for cid in list(_COMMENT_RANGE_LOGICAL):
+        if cid not in _COMMENT_RANGE_VALID_IDS:
+            continue
+        esc = html.escape(cid, quote=True)
+        parts.append(f'<mark class="docx-comment-range" data-comment-id="{esc}">')
+        emitted.append(cid)
     i = 0
     while i < len(segment_items):
         item = segment_items[i]
+        if isinstance(item, CommentRangeStart):
+            cid = str(item.comment_id)
+            if cid not in _COMMENT_RANGE_VALID_IDS:
+                i += 1
+                continue
+            esc = html.escape(cid, quote=True)
+            _COMMENT_RANGE_LOGICAL.append(cid)
+            parts.append(f'<mark class="docx-comment-range" data-comment-id="{esc}">')
+            emitted.append(cid)
+            i += 1
+            continue
+        if isinstance(item, CommentRangeEnd):
+            cid = str(item.comment_id)
+            if cid not in _COMMENT_RANGE_VALID_IDS:
+                i += 1
+                continue
+            cid = str(item.comment_id)
+            if emitted and emitted[-1] == cid:
+                parts.append('</mark>')
+                emitted.pop()
+                for j in range(len(_COMMENT_RANGE_LOGICAL) - 1, -1, -1):
+                    if _COMMENT_RANGE_LOGICAL[j] == cid:
+                        _COMMENT_RANGE_LOGICAL.pop(j)
+                        break
+            elif cid in emitted:
+                idx = len(emitted) - 1 - emitted[::-1].index(cid)
+                to_close = emitted[idx:]
+                for _ in to_close:
+                    parts.append('</mark>')
+                emitted = emitted[:idx]
+                for close_cid in reversed(to_close):
+                    for j in range(len(_COMMENT_RANGE_LOGICAL) - 1, -1, -1):
+                        if _COMMENT_RANGE_LOGICAL[j] == close_cid:
+                            _COMMENT_RANGE_LOGICAL.pop(j)
+                            break
+                for reopen_cid in to_close[1:]:
+                    esc2 = html.escape(reopen_cid, quote=True)
+                    parts.append(f'<mark class="docx-comment-range" data-comment-id="{esc2}">')
+                    emitted.append(reopen_cid)
+                    _COMMENT_RANGE_LOGICAL.append(reopen_cid)
+            elif cid in _COMMENT_RANGE_LOGICAL:
+                for j in range(len(_COMMENT_RANGE_LOGICAL) - 1, -1, -1):
+                    if _COMMENT_RANGE_LOGICAL[j] == cid:
+                        _COMMENT_RANGE_LOGICAL.pop(j)
+                        break
+                if cid in emitted:
+                    # find and remove
+                    for j in range(len(emitted) - 1, -1, -1):
+                        if emitted[j] == cid:
+                            emitted.pop(j)
+                            break
+                    parts.append('</mark>')
+            else:
+                pass
+            i += 1
+            continue
+        if isinstance(item, NoteReference):
+            if item.note_type == "footnote":
+                parts.append(_footnote_ref_html(item))
+            elif item.note_type == "endnote":
+                parts.append(_endnote_ref_html(item))
+            elif item.note_type == "comment":
+                parts.append(_comment_ref_html(item))
+            else:
+                parts.append(html.escape(str(item.note_id)))
+            i += 1
+            continue
         if isinstance(item, Image):
             if item.wrap_type == "anchor":
                 container = _float_container(item)
+                if container == "column":
+                    if emitted:
+                        try:
+                            item._float_comment_ids = list(emitted)
+                        except Exception:
+                            pass
+                    collected.append((container, item))
+                    i += 1
+                    continue
                 is_tb_block = _is_top_bottom(item) and (item.alignment_horizontal in _LEFT_ALIGN or item.alignment_horizontal in _RIGHT_ALIGN or item.alignment_horizontal == "center")
                 if _is_wrap_float(item) or is_tb_block or container == "paragraph":
                     if is_hf:
                         if container == "paragraph":
                             needs_relative = True
-                        parts.append(render_float_image(item, assets, page))
+                        inner = render_float_image(item, assets, page, is_hf=True)
+                        if emitted:
+                            cid = html.escape(emitted[-1], quote=True)
+                            if 'data-comment-id' not in inner:
+                                inner = inner.replace('<img ', '<img data-comment-id="%s" ' % cid, 1)
+                        parts.append(inner)
                     elif _is_wrap_float(item):
                         anc = getattr(item, "anchor_paragraph_index", -1)
                         if anc is None:
@@ -482,6 +766,10 @@ def _render_items_segment(segment_items, assets, page, collected, is_hf=False):
                         inner = render_float_image(item, assets, page)
                         if 'data-anchor' not in inner:
                             inner = inner.replace('<img ', '<img data-anchor="%d" ' % anc, 1)
+                        if emitted:
+                            cid = html.escape(emitted[-1], quote=True)
+                            if 'data-comment-id' not in inner:
+                                inner = inner.replace('<img ', '<img data-comment-id="%s" ' % cid, 1)
                         parts.append(inner)
                     elif is_tb_block:
                         anc = getattr(item, "anchor_paragraph_index", -1)
@@ -494,6 +782,10 @@ def _render_items_segment(segment_items, assets, page, collected, is_hf=False):
                         inner = render_float_image(item, assets, page)
                         if 'data-anchor' not in inner:
                             inner = inner.replace('<img ', '<img data-anchor="%d" ' % anc, 1)
+                        if emitted:
+                            cid = html.escape(emitted[-1], quote=True)
+                            if 'data-comment-id' not in inner:
+                                inner = inner.replace('<img ', '<img data-comment-id="%s" ' % cid, 1)
                         parts.append(inner)
                     else:
                         anc = getattr(item, "anchor_paragraph_index", -1)
@@ -504,10 +796,19 @@ def _render_items_segment(segment_items, assets, page, collected, is_hf=False):
                         except Exception:
                             anc = -1
                         inner = render_float_image(item, assets, page)
-                        parts.append('<span class="docx-float-wrap docx-para-float-wrap" data-anchor="%d">%s</span>' % (anc, inner))
+                        if emitted:
+                            cid = html.escape(emitted[-1], quote=True)
+                            if 'data-comment-id' not in inner:
+                                inner = inner.replace('<img ', '<img data-comment-id="%s" ' % cid, 1)
+                        parts.append('<span class="docx-float-wrap docx-para-float-wrap" data-anchor="%d"%s>%s</span>' % (anc, ' data-comment-id="%s"' % html.escape(emitted[-1], quote=True) if emitted else '', inner))
                         if container == "paragraph":
                             needs_relative = True
                 else:
+                    if emitted:
+                        try:
+                            item._float_comment_ids = list(emitted)
+                        except Exception:
+                            pass
                     collected.append((container, item))
             else:
                 parts.append(render_image(item, assets))
@@ -517,7 +818,7 @@ def _render_items_segment(segment_items, assets, page, collected, is_hf=False):
         if href:
             group = []
             j = i
-            while j < len(segment_items) and not isinstance(segment_items[j], Image) and getattr(segment_items[j], "href", None) == href:
+            while j < len(segment_items) and not isinstance(segment_items[j], Image) and not isinstance(segment_items[j], (CommentRangeStart, CommentRangeEnd)) and getattr(segment_items[j], "href", None) == href:
                 group.append(segment_items[j])
                 j += 1
             inner = "".join(_render_run_inner(r) for r in group)
@@ -525,8 +826,14 @@ def _render_items_segment(segment_items, assets, page, collected, is_hf=False):
                 parts.append('<a href="%s">%s</a>' % (html.escape(href, quote=True), inner))
             i = j
             continue
+        # Skip empty run wrapper but preserve range marks
+        if isinstance(item, Run) and not item.text and not getattr(item, "field_type", None):
+            # Still need to handle Run with tabs/br? Those are handled as text \t/\n already
+            pass
         parts.append(_render_run_inner(item))
         i += 1
+    for _ in reversed(emitted):
+        parts.append('</mark>')
     return "".join(parts), needs_relative
 
 def _render_content(para: Paragraph, assets, page, collected, is_hf=False):
@@ -782,7 +1089,12 @@ def _render_cell_content(cell: Cell, assets, page, table_anchor=None, is_hf=Fals
                 parts.append("<p%s>%s</p>" % (style_attr, inner))
         for _container, img in collected:
             if is_hf:
-                inner_float = render_float_image(img, assets, page)
+                inner_float = render_float_image(img, assets, page, is_hf=True)
+                cids = getattr(img, '_float_comment_ids', None)
+                if cids:
+                    cid = html.escape(cids[-1], quote=True)
+                    if 'data-comment-id' not in inner_float:
+                        inner_float = inner_float.replace('<img ', '<img data-comment-id="%s" ' % cid, 1)
                 parts.append('<div class="docx-hf-float-wrap">%s</div>' % inner_float)
             else:
                 try:
@@ -925,17 +1237,54 @@ def render_sidebar_toc(toc_entries: list) -> str:
 
 
 def _render_hf_blocks(blocks, assets, page):
-    parts = []
-    for b in blocks:
-        if isinstance(b, Table):
-            parts.append(render_table(b, assets, page, is_hf=True))
-        elif isinstance(b, Paragraph):
-            html_str, _needs, _ext = _render_paragraph_html(b, assets, page, is_hf=True)
-            parts.append(html_str)
-            for _container, img in _ext:
-                inner = render_float_image(img, assets, page)
-                parts.append('<div class="docx-hf-float-wrap">%s</div>' % inner)
-    return "".join(parts)
+    global _COMMENT_RANGE_LOGICAL
+    saved = list(_COMMENT_RANGE_LOGICAL)
+    _COMMENT_RANGE_LOGICAL = []
+    try:
+        _block_parts = []
+        _hf_content_floats = []
+        _hf_page_floats = []
+        for b in blocks:
+            if isinstance(b, Table):
+                _block_parts.append(render_table(b, assets, page, is_hf=True))
+            elif isinstance(b, Paragraph):
+                html_str, _needs, _ext = _render_paragraph_html(b, assets, page, is_hf=True)
+                _block_parts.append(html_str)
+                for _container, img in _ext:
+                    if _container in ("content", "column"):
+                        _hf_content_floats.append((_container, img))
+                    else:
+                        _hf_page_floats.append((_container, img))
+        _inner_blocks_html = "".join(_block_parts)
+        _hf_header_inset = 9
+        _content_style = "margin-left:%dpx; width:%dpx;" % (max(0, page.margin_left_px - _hf_header_inset), page.content_width_px)
+        _wrapped_blocks = '<div class="docx-hf-blocks" style="%s">%s</div>' % (_content_style, _inner_blocks_html) if _inner_blocks_html.strip() else ""
+        parts = []
+        if _wrapped_blocks:
+            parts.append(_wrapped_blocks)
+        for _container, img in _hf_page_floats:
+            inner = render_float_image(img, assets, page, is_hf=False)
+            cids = getattr(img, '_float_comment_ids', None)
+            if cids:
+                cid = html.escape(cids[-1], quote=True)
+                if 'data-comment-id' not in inner:
+                    inner = inner.replace('<img ', '<img data-comment-id="%s" ' % cid, 1)
+            parts.append('<div class="docx-hf-float-wrap">%s</div>' % inner)
+        if _hf_content_floats:
+            _wrapper_style = "position:absolute; left:%dpx; top:%dpx; width:%dpx; height:0;" % (page.margin_left_px, page.margin_top_px, page.content_width_px)
+            _inner_parts = []
+            for _container, img in _hf_content_floats:
+                inner = render_float_image(img, assets, page, is_hf=False)
+                cids = getattr(img, '_float_comment_ids', None)
+                if cids:
+                    cid = html.escape(cids[-1], quote=True)
+                    if 'data-comment-id' not in inner:
+                        inner = inner.replace('<img ', '<img data-comment-id="%s" ' % cid, 1)
+                _inner_parts.append('<div class="docx-hf-float-wrap">%s</div>' % inner)
+            parts.append('<div class="docx-hf-content-box" style="%s">%s</div>' % (_wrapper_style, "".join(_inner_parts)))
+        return "".join(parts)
+    finally:
+        _COMMENT_RANGE_LOGICAL = saved
 
 
 def render_header_footer(hf: HeaderFooter, assets=None, page=None) -> str:
@@ -1058,6 +1407,21 @@ def _viewer_style() -> str:
         "    .docx-page-number::after{content:\"[PAGE]\";}\n"
         "    .docx-num-pages::after{content:\"[NUMPAGES]\";}\n"
         "    .docx-page-ref::after{content:\"[PAGEREF]\";}\n"
+        "    .docx-footnote-ref{font-size:0.75em;vertical-align:super;line-height:0;}\n"
+        "    .docx-footnote-ref a,.docx-endnote-ref a,.docx-comment-ref a{color:#4f46e5;text-decoration:none;border-bottom:1px dotted #a5b4fc;}\n"
+        "    .docx-footnote-ref a:hover,.docx-endnote-ref a:hover,.docx-comment-ref a:hover{color:#3730a3;border-bottom-style:solid;}\n"
+        "    .docx-comment-ref{font-size:0.75em;vertical-align:super;line-height:0;}\n"
+        "    .docx-footnotes,.docx-endnotes,.docx-comments{margin-top:2em;padding-top:1em;border-top:1px solid #e5e7eb;font-size:0.9em;}\n"
+        "    .docx-footnotes h2,.docx-endnotes h2,.docx-comments h2{font-size:13px;font-weight:700;color:#374151;margin:0 0 0.8em;}\n"
+        "    .docx-footnote,.docx-endnote,.docx-comment{margin:0.6em 0;padding:4px 8px;border-radius:6px;}\n"
+        "    .docx-footnote:target,.docx-endnote:target,.docx-comment:target,.docx-comment-reply:target{background:#eef2ff;outline:2px solid #a5b4fc;}\n"
+        "    .docx-comment-reply{margin:0.6em 0 0.6em 1.2em;padding:4px 8px;border-radius:6px;border-left:2px solid #e0e7ff;background:#f8fafc;}\n"
+        "    .docx-comment-replies{margin-top:0.6em;}\n"
+        "    .docx-comment-range{background:#fef9c3;border-radius:3px;padding:0 1px;box-decoration-break:clone;-webkit-box-decoration-break:clone;cursor:pointer;transition:background .15s;}\n"
+        "    .docx-comment-range:hover{background:#fde68a;}\n"
+        "    .docx-comment-range.is-active{background:#fde68a;outline:1px solid #f59e0b;}\n"
+        "    .docx-footnote-backref,.docx-endnote-backref,.docx-comment-backref{margin-left:0.5em;color:#6366f1;text-decoration:none;font-weight:600;}\n"
+        "    .docx-footnote-backref:hover,.docx-endnote-backref:hover,.docx-comment-backref:hover{color:#3730a3;}\n"
         "    .sidebar-overlay{position:fixed;inset:0;background:rgba(15,23,42,.32);backdrop-filter:blur(2px);z-index:15;opacity:0;visibility:hidden;transition:opacity .18s,visibility .18s;}\n"
         "    .sidebar-overlay.visible{opacity:1;visibility:visible;}\n"
         "    @media (max-width:780px){.viewer-sidebar{position:fixed;left:0;top:0;bottom:0;z-index:20;width:280px;min-width:280px;max-width:280px;transform:translateX(-100%);transition:transform .24s cubic-bezier(.2,.8,.2,1);opacity:1;pointer-events:auto;border-right:1px solid #e5e7eb;box-shadow:12px 0 40px rgba(15,23,42,.12);}\n"
@@ -1412,6 +1776,21 @@ def _viewer_script() -> str:
         "    if(document.readyState==='complete') layoutAllTabs(); else window.addEventListener('load', layoutAllTabs);\n"
         "    window.addEventListener('resize', layoutAllTabs);\n"
         "    setTimeout(layoutAllTabs,100); setTimeout(layoutAllTabs,500);\n"
+        "    document.addEventListener('click', function(e){\n"
+        "      var m=e.target.closest('.docx-comment-range');\n"
+        "      if(m){\n"
+        "        var cid=m.getAttribute('data-comment-id');\n"
+        "        var el=document.getElementById('comment-'+cid);\n"
+        "        if(el){ el.scrollIntoView({behavior:'smooth',block:'center'}); el.classList.add('is-active'); setTimeout(function(){el.classList.remove('is-active');},1500); var rs=document.querySelectorAll('.docx-comment-range[data-comment-id=\"'+cid+'\"]'); rs.forEach(function(x){x.classList.add('is-active'); setTimeout(function(){x.classList.remove('is-active');},1500);}); }\n"
+        "        return;\n"
+        "      }\n"
+        "      var c=e.target.closest('.docx-comment, .docx-comment-reply');\n"
+        "      if(c && c.id && c.id.indexOf('comment-')===0){\n"
+        "        var cid=c.id.replace('comment-','');\n"
+        "        var rs=document.querySelectorAll('.docx-comment-range[data-comment-id=\"'+cid+'\"]');\n"
+        "        if(rs.length){ rs[0].scrollIntoView({behavior:'smooth',block:'center'}); rs.forEach(function(x){x.classList.add('is-active'); setTimeout(function(){x.classList.remove('is-active');},1500);}); }\n"
+        "      }\n"
+        "    });\n"
         "    window.__viewer={setSidebarOpen:setSidebarOpen,isSidebarOpen:isSidebarOpen,setActive:setActive};\n"
         "  })();\n"
         "  </script>\n"
@@ -1419,9 +1798,87 @@ def _viewer_script() -> str:
     )
 
 
+def _render_note_blocks(blocks, assets, page) -> str:
+    parts = []
+    for b in blocks or []:
+        if isinstance(b, Table):
+            parts.append(render_table(b, assets, page))
+        elif isinstance(b, Paragraph):
+            s, _, _ = _render_paragraph_html(b, assets, page)
+            parts.append(s)
+    return "".join(parts)
+
+def _render_footnotes_section(footnotes, assets, page) -> str:
+    if not footnotes:
+        return ""
+    items = []
+    for note in footnotes:
+        nid = html.escape(str(note.note_id), quote=True)
+        body_id = f"footnote-{nid}"
+        inner = _render_note_blocks(note.blocks, assets, page)
+        if not inner.strip():
+            inner = "<p></p>"
+        ref_ids = _FOOTNOTE_REF_IDS.get(str(note.note_id), [])
+        if ref_ids:
+            backs = "".join(f'<a href="#{html.escape(rid, quote=True)}" class="docx-footnote-backref" aria-label="Back to reference {html.escape(str(note.note_id))}">↩</a>' for rid in ref_ids)
+        else:
+            backs = ""
+        display = html.escape(str(note.note_id))
+        items.append(f'<div class="docx-footnote" id="{body_id}"><span class="docx-footnote-label">{display}.</span> {inner} {backs}</div>')
+    return '<section class="docx-footnotes"><h2>Footnotes</h2>\n' + "\n".join(items) + "\n</section>"
+
+def _render_endnotes_section(endnotes, assets, page) -> str:
+    if not endnotes:
+        return ""
+    items = []
+    for note in endnotes:
+        nid = html.escape(str(note.note_id), quote=True)
+        body_id = f"endnote-{nid}"
+        inner = _render_note_blocks(note.blocks, assets, page)
+        if not inner.strip():
+            inner = "<p></p>"
+        ref_ids = _ENDNOTE_REF_IDS.get(str(note.note_id), [])
+        if ref_ids:
+            backs = "".join(f'<a href="#{html.escape(rid, quote=True)}" class="docx-endnote-backref" aria-label="Back to reference {html.escape(str(note.note_id))}">↩</a>' for rid in ref_ids)
+        else:
+            backs = ""
+        display = html.escape(str(note.note_id))
+        items.append(f'<div class="docx-endnote" id="{body_id}"><span class="docx-endnote-label">{display}.</span> {inner} {backs}</div>')
+    return '<section class="docx-endnotes"><h2>Endnotes</h2>\n' + "\n".join(items) + "\n</section>"
+
+def _render_comment_node(note, assets, page, is_reply: bool = False) -> str:
+    nid = html.escape(str(note.note_id), quote=True)
+    body_id = f"comment-{nid}"
+    inner = _render_note_blocks(note.blocks, assets, page)
+    if not inner.strip():
+        inner = "<p></p>"
+    ref_ids = _COMMENT_REF_IDS.get(str(note.note_id), [])
+    if ref_ids:
+        backs = "".join(f'<a href="#{html.escape(rid, quote=True)}" class="docx-comment-backref" aria-label="Back to reference {html.escape(str(note.note_id))}">↩</a>' for rid in ref_ids)
+    else:
+        backs = ""
+    display = html.escape(str(note.note_id))
+    cls = "docx-comment-reply" if is_reply else "docx-comment"
+    parts = [f'<div class="{cls}" id="{body_id}"><span class="docx-comment-label">{display}.</span> {inner} {backs}']
+    replies = getattr(note, "replies", None) or []
+    if replies:
+        nested = "".join(_render_comment_node(child, assets, page, is_reply=True) for child in replies)
+        parts.append(f'<div class="docx-comment-replies">{nested}</div>')
+    parts.append("</div>")
+    return "".join(parts)
+
+def _render_comments_section(comments, assets, page) -> str:
+    if not comments:
+        return ""
+    roots = [c for c in comments if getattr(c, "parent_id", None) is None]
+    if not roots:
+        roots = list(comments)
+    items = [_render_comment_node(note, assets, page, is_reply=False) for note in roots]
+    return '<section class="docx-comments"><h2>Comments</h2>\n' + "\n".join(items) + "\n</section>"
+
 def render_html(blocks=None, title: str = "Converted Document", toc=None,
                 assets=None, page_layout=None, paragraphs=None, sections=None, even_headers=False,
-                default_font_size_pt: float = 11.0) -> str:
+                default_font_size_pt: float = 11.0, footnotes=None, endnotes=None, comments=None) -> str:
     """Render a full HTML document from normalized blocks.
 
     `blocks` is a document-order list of Paragraph | Table. Heading detection
@@ -1436,12 +1893,59 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
     docDefaults rPrDefault); it sets the .docx-content base so inherited runs
     render at the correct size and inline run typography always wins.
     """
-    global DEFAULT_FONT_HALF_POINTS
+    global DEFAULT_FONT_HALF_POINTS, _CURRENT_SECTIONS, _FOOTNOTE_TOTALS, _FOOTNOTE_CUR, _ENDNOTE_TOTALS, _ENDNOTE_CUR, _COMMENT_TOTALS, _COMMENT_CUR, _FOOTNOTE_REF_IDS, _ENDNOTE_REF_IDS, _COMMENT_REF_IDS, _COMMENT_RANGE_LOGICAL, _COMMENT_VALID_IDS, _COMMENT_RANGE_VALID_IDS
+    _CURRENT_SECTIONS = sections
     DEFAULT_FONT_HALF_POINTS = int(round(default_font_size_pt * 2))
+    if footnotes is None:
+        footnotes = []
+    if endnotes is None:
+        endnotes = []
+    if comments is None:
+        comments = []
     if blocks is None:
         blocks = paragraphs if paragraphs is not None else []
     if page_layout is None:
         page_layout = PageLayout()
+    _FOOTNOTE_TOTALS, _ENDNOTE_TOTALS, _COMMENT_TOTALS = _collect_note_totals(blocks)
+    _FOOTNOTE_CUR = {}
+    _ENDNOTE_CUR = {}
+    _COMMENT_CUR = {}
+    _FOOTNOTE_REF_IDS = {}
+    _ENDNOTE_REF_IDS = {}
+    _COMMENT_REF_IDS = {}
+    _COMMENT_RANGE_LOGICAL = []
+    _COMMENT_VALID_IDS = set(str(c.note_id) for c in comments)
+    _range_starts = Counter()
+    _range_ends = Counter()
+    def _scan_ranges(para):
+        for it in para.content or []:
+            if isinstance(it, CommentRangeStart):
+                _range_starts[it.comment_id] += 1
+            elif isinstance(it, CommentRangeEnd):
+                _range_ends[it.comment_id] += 1
+    for b in blocks:
+        if isinstance(b, Paragraph):
+            _scan_ranges(b)
+        elif isinstance(b, Table):
+            for row in b.rows:
+                for cell in row.cells:
+                    for p in cell.content:
+                        _scan_ranges(p)
+    if sections:
+        for sec in sections:
+            for hf in list(sec.headers.values()) + list(sec.footers.values()):
+                for b in hf.blocks:
+                    if isinstance(b, Paragraph):
+                        _scan_ranges(b)
+                    elif isinstance(b, Table):
+                        for row in b.rows:
+                            for cell in row.cells:
+                                for p in cell.content:
+                                    _scan_ranges(p)
+    _COMMENT_RANGE_VALID_IDS = {cid for cid in _COMMENT_VALID_IDS if _range_starts.get(cid, 0) == _range_ends.get(cid, 0) and _range_starts.get(cid, 0) > 0}
+    # Also include ids that have no range but are valid comments – they won't be used for range filtering
+    # For range rendering, we only allow ids that are balanced
+    # If no balanced ranges, _COMMENT_RANGE_VALID_IDS may be empty, which is fine (no marks)
 
     first_h1 = None
     for b in blocks:
@@ -1585,13 +2089,15 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
             for typ in ["default", "first", "even"]:
                 hf = sec.headers.get(typ)
                 if hf and hf.target not in seen_hf:
-                    inner = _render_hf_blocks(hf.blocks, assets, page_layout)
+                    _hf_page = sec.page_layout or page_layout
+                    inner = _render_hf_blocks(hf.blocks, assets, _hf_page)
                     if inner.strip():
                         header_html_parts.append('<header class="docx-header docx-header-%s" data-type="%s">%s</header>' % (typ, typ, inner))
                         seen_hf.add(hf.target)
                 hf = sec.footers.get(typ)
                 if hf and hf.target not in seen_hf:
-                    inner = _render_hf_blocks(hf.blocks, assets, page_layout)
+                    _hf_page = sec.page_layout or page_layout
+                    inner = _render_hf_blocks(hf.blocks, assets, _hf_page)
                     if inner.strip():
                         footer_html_parts.append('<footer class="docx-footer docx-footer-%s" data-type="%s">%s</footer>' % (typ, typ, inner))
                         seen_hf.add(hf.target)
@@ -1608,6 +2114,12 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
     )
     def _float_wrap(img, anchor_idx):
         inner = render_float_image(img, assets, page_layout)
+        cids = getattr(img, '_float_comment_ids', None)
+        if cids:
+            cid = html.escape(cids[-1], quote=True)
+            if 'data-comment-id' not in inner:
+                inner = inner.replace('<img ', '<img data-comment-id="%s" ' % cid, 1)
+            return '<div class="docx-float-wrap" data-anchor="%d" data-comment-id="%s">%s</div>' % (int(anchor_idx), cid, inner)
         return '<div class="docx-float-wrap" data-anchor="%d">%s</div>' % (int(anchor_idx), inner)
 
     content_floats_html = "\n".join(_float_wrap(im, a) for im, a in content_floats)
@@ -1619,7 +2131,10 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
         content_floats_html,
     )
 
-    page_inner = "\n".join([p for p in [header_block, content_block, footer_block] if p])
+    footnotes_html = _render_footnotes_section(footnotes, assets, page_layout)
+    endnotes_html = _render_endnotes_section(endnotes, assets, page_layout)
+    comments_html = _render_comments_section(comments, assets, page_layout)
+    page_inner = "\n".join([p for p in [header_block, content_block, footnotes_html, endnotes_html, comments_html, footer_block] if p])
     page_style = "position: relative; width: %dpx; max-width: calc(100%% - 32px); min-height: %dpx; box-sizing: border-box;" % (
         page_layout.page_width_px, page_layout.page_height_px)
     page_block = '<div class="docx-page" style="%s">\n%s\n%s\n</div>' % (

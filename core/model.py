@@ -86,11 +86,11 @@ class Paragraph:
     # preserve the position of an image relative to surrounding text. `images`
     # is a convenience view (subset of `content`) for queries/tests.
     images: List["Image"] = field(default_factory=list)
-    # Ordered content: a mix of Run and Image objects, in the exact document
-    # order they appeared inside the paragraph. The renderer iterates this when
-    # present; when empty (e.g. test-built paragraphs), it falls back to `runs`.
-    # This single field is the source of truth for in-paragraph ordering.
-    content: List[Union["Run", "Image"]] = field(default_factory=list)
+    # Ordered content: a mix of Run/Image/NoteReference objects, in the exact
+    # document order they appeared inside the paragraph. The renderer iterates
+    # this when present; when empty (e.g. test-built paragraphs), it falls back
+    # to `runs`. This single field is the source of truth for in-paragraph ordering.
+    content: List[Union["Run", "Image", "NoteReference", "CommentRangeStart", "CommentRangeEnd"]] = field(default_factory=list)
     # Word tab stops from w:pPr/w:tabs (preserved verbatim for renderer)
     tabs: List["TabStop"] = field(default_factory=list)
     # Stable block id assigned by the anchoring pass (core/anchoring.py) so
@@ -220,6 +220,69 @@ class ImageAsset:
 
 
 @dataclass
+class CommentRangeStart:
+    """Semantic marker for w:commentRangeStart.
+
+    Preserves exact OOXML range boundary in document order. The renderer
+    uses the ordered Paragraph.content sequence to open/close <mark> wrappers.
+    """
+
+    comment_id: str
+
+
+@dataclass
+class CommentRangeEnd:
+    """Semantic marker for w:commentRangeEnd."""
+
+    comment_id: str
+
+
+@dataclass
+class NoteReference:
+    """Reference to a footnote or endnote from body content.
+
+    Resolved via w:footnoteReference / w:endnoteReference @w:id. The reference
+    itself carries no text; the renderer emits a clickable superscript link to
+    the corresponding Note body. Multiple references may target the same note.
+    """
+
+    note_type: str  # "footnote" | "endnote" | "comment"
+    note_id: str    # OOXML w:id as string (preserves non-contiguous / negative ids)
+
+
+@dataclass
+class Note:
+    """Footnote or endnote definition from word/footnotes.xml or word/endnotes.xml.
+
+    Preserves ordered blocks (Paragraph/Table) via the same pipeline as body
+    content, including formatting/hyperlinks/images.
+
+    For threaded comments (word/commentsExtended.xml / w15:commentEx) the
+    parent/reply hierarchy is captured via para_id / parent_id / replies.
+    Flat comments (no extended part) remain parent_id=None and replies=[].
+    """
+
+    note_type: str  # "footnote" | "endnote" | "comment"
+    note_id: str
+    blocks: List["Block"] = field(default_factory=list)
+    # --- comment-specific metadata (None for footnote/endnote or flat comment) ---
+    author: Optional[str] = None
+    date: Optional[str] = None
+    initials: Optional[str] = None
+    # Modern Word threaded-comment identity (w15:paraId). Stable hex string.
+    para_id: Optional[str] = None
+    # Resolved parent comment id (w:id of parent Note), None for root.
+    parent_id: Optional[str] = None
+    # Raw w15:paraIdParent before resolution (debug/trace).
+    para_id_parent: Optional[str] = None
+    # Nested replies (direct children). For root, contains its replies; for
+    # replies that themselves have children, nested recursively.
+    replies: List["Note"] = field(default_factory=list)
+    # Done/resolved flag from w15:done="1" (None when absent).
+    done: Optional[bool] = None
+
+
+@dataclass
 class Image:
     """A normalized image PLACEMENT inside the document.
 
@@ -281,6 +344,14 @@ class Image:
     # Allows the renderer to identify which paragraph an anchored image is attached to.
     anchor_paragraph_index: Optional[int] = None
     anchor_paragraph_text: Optional[str] = None
+    section_index: Optional[int] = None
+    column_index: Optional[int] = None
+    table_id: Optional[str] = None
+    cell_row: Optional[int] = None
+    cell_col: Optional[int] = None
+    rotation: Optional[int] = None  # a:xfrm/@rot in 1/60000 deg, None when absent
+    extent_cx: Optional[int] = None  # raw wp:extent cx in EMU
+    extent_cy: Optional[int] = None  # raw wp:extent cy in EMU
 
     def __getitem__(self, key: str) -> Any:
         """Allow dict-like access to Image attributes for backward compatibility."""
@@ -307,6 +378,11 @@ class PageLayout:
     margin_top_emu: int = 914400      # 1in
     margin_right_emu: int = 914400    # 1in
     margin_bottom_emu: int = 914400  # 1in
+    cols_num: int = 1
+    cols_space_emu: int = 0
+    cols_equal_width: bool = True
+    col_widths_emu: Optional[List[int]] = None
+    col_spaces_emu: Optional[List[int]] = None
 
     @property
     def page_width_px(self) -> int:
@@ -332,6 +408,32 @@ class PageLayout:
     @property
     def margin_top_px(self) -> int:
         return emu_to_px(self.margin_top_emu)
+
+    def column_boxes_px(self):
+        usable_emu = self.width_emu - self.margin_left_emu - self.margin_right_emu
+        if self.cols_num <= 1:
+            return [{"left_emu": 0, "left_px": 0, "width_emu": usable_emu, "width_px": emu_to_px(usable_emu), "right_px": emu_to_px(usable_emu)}]
+        boxes = []
+        if self.col_widths_emu and len(self.col_widths_emu) == self.cols_num:
+            x = 0
+            for i in range(self.cols_num):
+                w = self.col_widths_emu[i]
+                left_px = emu_to_px(x)
+                width_px = emu_to_px(w)
+                boxes.append({"left_emu": x, "left_px": left_px, "width_emu": w, "width_px": width_px, "right_px": left_px + width_px})
+                if i < self.cols_num - 1:
+                    sp = self.col_spaces_emu[i] if self.col_spaces_emu and i < len(self.col_spaces_emu) else self.cols_space_emu
+                    x += w + sp
+        else:
+            total_space = (self.cols_num - 1) * self.cols_space_emu
+            col_w = (usable_emu - total_space) // self.cols_num if self.cols_num else usable_emu
+            x = 0
+            for i in range(self.cols_num):
+                left_px = emu_to_px(x)
+                width_px = emu_to_px(col_w)
+                boxes.append({"left_emu": x, "left_px": left_px, "width_emu": col_w, "width_px": width_px, "right_px": left_px + width_px})
+                x += col_w + self.cols_space_emu
+        return boxes
 
 
 @dataclass

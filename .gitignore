@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Playwright / browser artifacts
+.playwright-mcp/
+playwright-report/
+test-results/
+blob-report/
+
+# Codegraph (generated index, large)
+.codegraph/
+
+# Agent / tooling state (opencode runtime)
+.omo/run-continuation/
+.omo/notepads/
+
+# Temporary debug / evidence outputs (manual runs)
+output/*.png
+output/final_test/
+output/test_output/
+output/test_output2/
+output_*/
+output_audit*/
+output_debug*/
+output_final*/
+output_geom*/
+output_headings*/
+output_real*/
+output_test*/
+output_trace*/
+output_toc*/
+test_img_out/
+test_output/
+test_output2/
+test_output3/
+test_output4/
+test_output5/
+tmp_test_output/
+geometry_fixtures/
+tests/output_vertical_slice.html
+tests/test-output/debug/
+tests/test-output/debug2/
+tests/test-output/debug3/
+tests/test-output/debug_case7/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Keep intentional test outputs if needed - uncomment to track:
+# !tests/test-output/*.html
+# !tests/test-output/*.png

@@ -35,6 +35,10 @@ from core.model import (
     Image,
     ImageAsset,
     PageLayout,
+    Note,
+    NoteReference,
+    CommentRangeStart,
+    CommentRangeEnd,
 )
 from core.units import emu_to_px, twip_to_emu, EMU_PER_PIXEL, EMU_PER_TWIP
 
@@ -45,9 +49,11 @@ NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 NS_PIC = "http://schemas.openxmlformats.org/drawingml/2006/picture"
 NS_OPC = "http://schemas.openxmlformats.org/package/2006/relationships"
+NS_V = "urn:schemas-microsoft-com:vml"
+NS_O = "urn:schemas-microsoft-com:office:office"
 
 _SUPPORTED_RELATIVE_FROM = {
-    "page", "margin", "column", "character", "paragraph",
+    "page", "margin", "column", "character", "paragraph", "line",
 }
 
 _WRAP_ELEMENT_TO_MODE = {
@@ -76,6 +82,114 @@ _EXT_MIME = {
 # extracted (so the asset store is complete) but the renderer degrades safely
 # rather than emitting a broken <img>.
 _UNSUPPORTED_MIME = {"image/emf", "image/wmf", "image/x-emf", "image/x-wmf"}
+
+# Symbol font glyph → Unicode mapping.
+# w:sym/@w:char is a font-specific glyph code, NOT a Unicode code point.
+# For Symbol, F0xx → U+00xx (offset 0xF000). For Wingdings, mapping is
+# arbitrary and must be explicit. Structure allows adding fonts without parser
+# logic changes.
+_SYMBOL_GLYPH_MAP: Dict[str, Dict[str, str]] = {
+    "Symbol": {
+        # Minimal explicit overrides; fallback offset handles F0xx → 00xx.
+        "F020": "\u0020",  # space
+        "F021": "\u0021",  # !
+        "F0D7": "\u00D7",  # × multiplication (test fixture)
+        "F0B7": "\u00B7",  # ·
+        "F0B1": "\u00B1",  # ±
+        "F0D0": "\u2212",  # − minus
+        "F0B0": "\u00B0",  # °
+        "F0B6": "\u2248",  # ≈
+        "F0B4": "\u221A",  # √
+        "F0A7": "\u25CF",  # ● (Symbol bullet, fallback)
+    },
+    "Wingdings": {
+        "F028": "\u25CF",  # ● black circle (test fixture)
+        "F021": "\u2702",  # ✂
+        "F022": "\u2701",
+        "F023": "\u2703",
+        "F024": "\u2704",
+        "F025": "\u260E",  # ☎
+        "F026": "\u2706",
+        "F027": "\u2707",
+        "F029": "\u25A0",  # ■
+        "F02A": "\u25A1",  # □
+        "F02B": "\u25AA",  # ▪
+        "F02C": "\u25AB",
+        "F02D": "\u25B2",  # ▲
+        "F02E": "\u25BC",  # ▼
+        "F02F": "\u25B6",
+        "F030": "\u25C0",
+        "F031": "\u25C6",  # ◆
+        "F032": "\u25C7",  # ◇
+        "F033": "\u25CB",  # ○
+        "F034": "\u25CF",
+        "F035": "\u25CE",  # ◎
+        "F036": "\u25C9",  # ◉
+        "F0A7": "\u25CF",
+    },
+    "Wingdings 2": {},
+    "Wingdings 3": {},
+    "Webdings": {},
+}
+
+def _decode_sym_char(font: Optional[str], char_hex: Optional[str]) -> Optional[str]:
+    """Decode w:sym @w:char hex + font → Unicode char.
+
+    font-specific lookup first, then Symbol offset fallback, then generic fallback.
+    Never silently drops: on unknown glyph returns low-byte char as safest visible fallback.
+    """
+    if not char_hex:
+        return None
+    hex_norm = char_hex.strip().upper()
+    # Normalize: Word may emit 'F0D7' or '0xF0D7' or decimal; handle hex without 0x.
+    if hex_norm.startswith("0X"):
+        hex_norm = hex_norm[2:]
+    # Preserve original hex string for map lookup (keys are uppercase F0xx)
+    try:
+        val = int(hex_norm, 16)
+    except ValueError:
+        return None
+
+    # 1) Explicit per-font table
+    if font:
+        table = _SYMBOL_GLYPH_MAP.get(font)
+        if table is not None:
+            hit = table.get(hex_norm)
+            if hit is not None:
+                return hit
+        # Case-insensitive fallback for font name
+        for k, tbl in _SYMBOL_GLYPH_MAP.items():
+            if k.lower() == font.lower():
+                hit = tbl.get(hex_norm)
+                if hit is not None:
+                    return hit
+                break
+
+    # 2) Symbol offset fallback: F0xx → 00xx (Adobe Symbol encoding)
+    if font and font.lower() == "symbol":
+        if 0xF020 <= val <= 0xF0FF:
+            try:
+                return chr(val - 0xF000)
+            except ValueError:
+                pass
+
+    # 3) Generic fallback: if val is valid Unicode, return chr(val & 0xFFFF low byte as last resort)
+    # Prefer low byte for Symbol-like F0xx values when font unknown
+    if font and 0xF000 <= val <= 0xF0FF:
+        try:
+            return chr(val - 0xF000)
+        except ValueError:
+            pass
+    try:
+        if 0x20 <= val <= 0x10FFFF:
+            return chr(val)
+    except ValueError:
+        pass
+    # Ultimate fallback: low byte
+    try:
+        return chr(val & 0xFF)
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -258,17 +372,27 @@ class OoxmlParser:
 
     def _parse_drawing(self, drawing_elem: ET.Element, kind: str) -> Optional[Image]:
         """Parse one wp:inline or wp:anchor into a normalized Image placement."""
-        # Display extent (EMU) -> CSS px. Both inline and anchor carry wp:extent.
-        # This is the authoritative conversion path (core.units.emu_to_px).
         extent = drawing_elem.find(self._qn_ns(NS_WP, "extent"))
         width = height = None
+        extent_cx = extent_cy = None
         if extent is not None:
             cx = extent.get("cx")
             cy = extent.get("cy")
             if cx and cx.lstrip("-").isdigit():
-                width = emu_to_px(int(cx))
+                extent_cx = int(cx)
+                width = emu_to_px(extent_cx)
             if cy and cy.lstrip("-").isdigit():
-                height = emu_to_px(int(cy))
+                extent_cy = int(cy)
+                height = emu_to_px(extent_cy)
+        rotation = None
+        xfrm = drawing_elem.find(".//" + self._qn_ns(NS_A, "xfrm"))
+        if xfrm is not None:
+            rot = xfrm.get("rot")
+            if rot and rot.lstrip("-").isdigit():
+                try:
+                    rotation = int(rot)
+                except ValueError:
+                    pass
 
         # Alt text: Word's "Alt Text" description is stored in wp:docPr/@descr.
         # wp:docPr/@name is the shape name (e.g. "Picture 1"), not a description,
@@ -310,6 +434,9 @@ class OoxmlParser:
             height=height,
             alt_text=alt_text,
             wrap_type=("anchor" if kind == "anchor" else "inline"),
+            rotation=rotation,
+            extent_cx=extent_cx,
+            extent_cy=extent_cy,
             **anchor_fields,
         )
 
@@ -448,16 +575,114 @@ class OoxmlParser:
         return points
 
     def _extract_images_from_r(self, r_elem: ET.Element) -> List[Image]:
-        """Extract image placements from a w:r that contains a w:drawing."""
+        """Extract image placements from a w:r that may contain DrawingML or VML."""
         images: List[Image] = []
-        drawing = r_elem.find(self._qn("drawing"))
-        if drawing is None:
-            return images
+        seen_rids = set()
         for kind in ("inline", "anchor"):
-            for node in drawing.findall(self._qn_ns(NS_WP, kind)):
+            for node in r_elem.findall(".//" + self._qn_ns(NS_WP, kind)):
+                rid = None
+                blip = node.find(".//" + self._qn_ns(NS_PIC, "blip"))
+                if blip is None:
+                    blip = node.find(".//" + self._qn_ns(NS_A, "blip"))
+                if blip is not None:
+                    rid = blip.get(self._qn_ns(NS_R, "embed"))
+                if rid and rid in seen_rids:
+                    continue
                 img = self._parse_drawing(node, kind)
                 if img is not None:
+                    if img.relationship_id not in seen_rids:
+                        seen_rids.add(img.relationship_id)
                     images.append(img)
+        for img in self._extract_vml_images(r_elem):
+            if img.relationship_id in seen_rids:
+                continue
+            seen_rids.add(img.relationship_id)
+            images.append(img)
+        return images
+
+    def _extract_vml_images(self, r_elem: ET.Element) -> List[Image]:
+        """Extract legacy VML images (w:pict/v:shape/v:imagedata)."""
+        images: List[Image] = []
+        for imagedata in r_elem.findall(".//" + self._qn_ns(NS_V, "imagedata")):
+            rid = imagedata.get(self._qn_ns(NS_R, "id"))
+            if not rid:
+                rid = imagedata.get(self._qn_ns(NS_R, "embed"))
+            if not rid:
+                for k, v in imagedata.attrib.items():
+                    if k.endswith("}id") or k.endswith("}embed"):
+                        rid = v
+                        break
+            if not rid:
+                continue
+            asset = self._resolve_asset(rid)
+            if asset is None:
+                continue
+            width = height = None
+            alt_text = None
+            for shape in r_elem.findall(".//" + self._qn_ns(NS_V, "shape")):
+                if imagedata in list(shape.iter()):
+                    style = shape.get("style", "")
+                    # style like "width:100pt;height:75pt" or "width:2in;height:1.5in"
+                    if style:
+                        import re
+                        w_m = re.search(r"width\s*:\s*([0-9.]+)\s*(pt|in|cm|mm|px|emu)?", style, re.I)
+                        h_m = re.search(r"height\s*:\s*([0-9.]+)\s*(pt|in|cm|mm|px|emu)?", style, re.I)
+                        if w_m:
+                            try:
+                                val = float(w_m.group(1))
+                                unit = (w_m.group(2) or "pt").lower()
+                                if unit == "pt":
+                                    width = int(round(val * 96.0 / 72.0))
+                                elif unit == "in":
+                                    width = int(round(val * 96.0))
+                                elif unit == "cm":
+                                    width = int(round(val * 96.0 / 2.54))
+                                elif unit == "mm":
+                                    width = int(round(val * 96.0 / 25.4))
+                                elif unit == "px":
+                                    width = int(round(val))
+                                elif unit == "emu":
+                                    width = emu_to_px(int(val))
+                            except Exception:
+                                pass
+                        if h_m:
+                            try:
+                                val = float(h_m.group(1))
+                                unit = (h_m.group(2) or "pt").lower()
+                                if unit == "pt":
+                                    height = int(round(val * 96.0 / 72.0))
+                                elif unit == "in":
+                                    height = int(round(val * 96.0))
+                                elif unit == "cm":
+                                    height = int(round(val * 96.0 / 2.54))
+                                elif unit == "mm":
+                                    height = int(round(val * 96.0 / 25.4))
+                                elif unit == "px":
+                                    height = int(round(val))
+                                elif unit == "emu":
+                                    height = emu_to_px(int(val))
+                            except Exception:
+                                pass
+                    # alt text from shape title or imagedata title
+                    alt = shape.get("alt") or shape.get("title") or imagedata.get(self._qn_ns(NS_O, "title")) or imagedata.get("title")
+                    if alt:
+                        alt_text = alt
+                    if not alt_text:
+                        alt_text = shape.get(self._qn_ns(NS_O, "title"))
+                    break
+            if not alt_text:
+                alt_text = imagedata.get(self._qn_ns(NS_O, "title")) or imagedata.get("title")
+            self._image_seq += 1
+            images.append(Image(
+                image_id="img%d" % self._image_seq,
+                relationship_id=rid,
+                source_path=asset.source_path,
+                media_type=asset.media_type,
+                width=width,
+                height=height,
+                alt_text=alt_text,
+                wrap_type="inline",
+            ))
         return images
 
     def get_image_assets(self) -> Dict[str, ImageAsset]:
@@ -467,6 +692,41 @@ class OoxmlParser:
     def get_page_layout(self) -> PageLayout:
         """Return the parsed page/margin geometry (EMU)."""
         return self._page_layout
+
+    def _parse_cols(self, sect_elem: ET.Element) -> dict:
+        w = self._w
+        cols = sect_elem.find(w + "cols") if sect_elem is not None else None
+        if cols is None:
+            return {}
+        num_raw = cols.get(w + "num")
+        num = int(num_raw) if num_raw and num_raw.isdigit() else 1
+        if num <= 1:
+            return {"cols_num": 1}
+        space_raw = cols.get(w + "space")
+        space_emu = twip_to_emu(int(space_raw)) if space_raw and space_raw.lstrip("-").isdigit() else 0
+        eq = cols.get(w + "equalWidth")
+        equal = True if eq is None else eq not in ("0", "false", "off")
+        col_els = cols.findall(w + "col")
+        if col_els:
+            widths = []
+            spaces = []
+            for ce in col_els:
+                w_raw = ce.get(w + "w")
+                if w_raw and w_raw.lstrip("-").isdigit():
+                    widths.append(twip_to_emu(int(w_raw)))
+                else:
+                    widths.append(0)
+                sp_raw = ce.get(w + "space")
+                if sp_raw and sp_raw.lstrip("-").isdigit():
+                    spaces.append(twip_to_emu(int(sp_raw)))
+                else:
+                    spaces.append(space_emu)
+            if len(widths) == num:
+                col_spaces = spaces[: num - 1] if num > 1 else []
+                return {"cols_num": num, "cols_equal_width": equal, "col_widths_emu": widths, "col_spaces_emu": col_spaces, "cols_space_emu": space_emu}
+            else:
+                return {"cols_num": num, "cols_space_emu": space_emu, "cols_equal_width": equal}
+        return {"cols_num": num, "cols_space_emu": space_emu, "cols_equal_width": equal}
 
     def _parse_page_layout(self) -> PageLayout:
         """Extract pgSz / pgMar from the document's sectPr, in EMU.
@@ -498,16 +758,16 @@ class OoxmlParser:
         pg = sect.find(w + "pgSz")
         mar = sect.find(w + "pgMar")
         kwargs = {}
-        pw = _twip(pg, "w")
-        ph = _twip(pg, "h")
+        pw = _twip(pg, w + "w")
+        ph = _twip(pg, w + "h")
         if pw:
             kwargs["width_emu"] = pw
         if ph:
             kwargs["height_emu"] = ph
-        ml = _twip(mar, "left")
-        mr = _twip(mar, "right")
-        mt = _twip(mar, "top")
-        mb = _twip(mar, "bottom")
+        ml = _twip(mar, w + "left")
+        mr = _twip(mar, w + "right")
+        mt = _twip(mar, w + "top")
+        mb = _twip(mar, w + "bottom")
         if ml:
             kwargs["margin_left_emu"] = ml
         if mr:
@@ -516,6 +776,7 @@ class OoxmlParser:
             kwargs["margin_top_emu"] = mt
         if mb:
             kwargs["margin_bottom_emu"] = mb
+        kwargs.update(self._parse_cols(sect))
         return PageLayout(**kwargs)
 
     def _parse_page_layout_from_sect(self, sect_elem: ET.Element) -> PageLayout:
@@ -530,16 +791,16 @@ class OoxmlParser:
         pg = sect_elem.find(w + "pgSz")
         mar = sect_elem.find(w + "pgMar")
         kwargs = {}
-        pw = _twip(pg, "w")
-        ph = _twip(pg, "h")
+        pw = _twip(pg, w + "w")
+        ph = _twip(pg, w + "h")
         if pw:
             kwargs["width_emu"] = pw
         if ph:
             kwargs["height_emu"] = ph
-        ml = _twip(mar, "left")
-        mr = _twip(mar, "right")
-        mt = _twip(mar, "top")
-        mb = _twip(mar, "bottom")
+        ml = _twip(mar, w + "left")
+        mr = _twip(mar, w + "right")
+        mt = _twip(mar, w + "top")
+        mb = _twip(mar, w + "bottom")
         if ml:
             kwargs["margin_left_emu"] = ml
         if mr:
@@ -548,6 +809,7 @@ class OoxmlParser:
             kwargs["margin_top_emu"] = mt
         if mb:
             kwargs["margin_bottom_emu"] = mb
+        kwargs.update(self._parse_cols(sect_elem))
         return PageLayout(**kwargs)
 
     def _get_even_headers_flag(self) -> bool:
@@ -652,6 +914,22 @@ class OoxmlParser:
                 target = rel["Target"]
                 hf = self._parse_header_footer_part(target, typ, "header", r_id)
                 if hf is not None:
+                    for _b in hf.blocks:
+                        if isinstance(_b, Paragraph):
+                            for _img in _b.images:
+                                _img.section_index = idx
+                            for _c in _b.content:
+                                if isinstance(_c, Image):
+                                    _c.section_index = idx
+                        elif isinstance(_b, Table):
+                            for _r in _b.rows:
+                                for _cc in _r.cells:
+                                    for _pp in _cc.content:
+                                        for _img in _pp.images:
+                                            _img.section_index = idx
+                                        for _cc2 in _pp.content:
+                                            if isinstance(_cc2, Image):
+                                                _cc2.section_index = idx
                     sec.headers[typ] = hf
             for fr in sect.findall(w + "footerReference"):
                 r_id = fr.get(self._qn_ns(NS_R, "id"))
@@ -664,6 +942,22 @@ class OoxmlParser:
                 target = rel["Target"]
                 hf = self._parse_header_footer_part(target, typ, "footer", r_id)
                 if hf is not None:
+                    for _b in hf.blocks:
+                        if isinstance(_b, Paragraph):
+                            for _img in _b.images:
+                                _img.section_index = idx
+                            for _c in _b.content:
+                                if isinstance(_c, Image):
+                                    _c.section_index = idx
+                        elif isinstance(_b, Table):
+                            for _r in _b.rows:
+                                for _cc in _r.cells:
+                                    for _pp in _cc.content:
+                                        for _img in _pp.images:
+                                            _img.section_index = idx
+                                        for _cc2 in _pp.content:
+                                            if isinstance(_cc2, Image):
+                                                _cc2.section_index = idx
                     sec.footers[typ] = hf
             sec.page_layout = self._parse_page_layout_from_sect(sect)
             sections.append(sec)
@@ -702,15 +996,75 @@ class OoxmlParser:
         if body is None:
             return []
         blocks = []
+        sec_idx = 0
+
+        def _collect_from_container(container_elem: ET.Element, sec_idx_val: int):
+            collected: List = []
+            for inner in container_elem:
+                if inner.tag == self._qn("p"):
+                    para = self._parse_paragraph(inner)
+                    if para is not None:
+                        for img in para.images:
+                            img.section_index = sec_idx_val
+                        for c in para.content:
+                            if isinstance(c, Image):
+                                c.section_index = sec_idx_val
+                        collected.append(para)
+                elif inner.tag == self._qn("tbl"):
+                    tbl = self._parse_table(inner)
+                    if tbl is not None:
+                        for row in tbl.rows:
+                            for cell in row.cells:
+                                for p in cell.content:
+                                    for img in p.images:
+                                        img.section_index = sec_idx_val
+                        collected.append(tbl)
+                elif inner.tag == self._qn("sdt"):
+                    sdt_content = inner.find(self._qn("sdtContent"))
+                    if sdt_content is not None:
+                        nested = _collect_from_container(sdt_content, sec_idx_val)
+                        collected.extend(nested)
+                elif inner.tag == self._qn("sectPr"):
+                    continue
+                else:
+                    continue
+            return collected
+
         for child in body:
             if child.tag == self._qn("p"):
                 para = self._parse_paragraph(child)
                 if para is not None:
+                    for img in para.images:
+                        img.section_index = sec_idx
+                    for c in para.content:
+                        if isinstance(c, Image):
+                            c.section_index = sec_idx
                     blocks.append(para)
+                pPr = child.find(self._qn("pPr"))
+                if pPr is not None and pPr.find(self._qn("sectPr")) is not None:
+                    sec_idx += 1
             elif child.tag == self._qn("tbl"):
                 tbl = self._parse_table(child)
                 if tbl is not None:
+                    for row in tbl.rows:
+                        for cell in row.cells:
+                            for p in cell.content:
+                                for img in p.images:
+                                    img.section_index = sec_idx
                     blocks.append(tbl)
+            elif child.tag == self._qn("sdt"):
+                sdt_content = child.find(self._qn("sdtContent"))
+                if sdt_content is not None:
+                    inner_blocks = _collect_from_container(sdt_content, sec_idx)
+                    blocks.extend(inner_blocks)
+                    for inner_elem in sdt_content.iter():
+                        if inner_elem.tag == self._qn("p"):
+                            pPr2 = inner_elem.find(self._qn("pPr"))
+                            if pPr2 is not None and pPr2.find(self._qn("sectPr")) is not None:
+                                sec_idx += 1
+                                break
+            elif child.tag == self._qn("sectPr"):
+                continue
             else:
                 continue
         return blocks
@@ -949,6 +1303,136 @@ class OoxmlParser:
 
         return model
 
+    def get_footnotes(self) -> List[Note]:
+        return self._parse_notes_part("word/footnotes.xml", "footnote")
+
+    def get_endnotes(self) -> List[Note]:
+        return self._parse_notes_part("word/endnotes.xml", "endnote")
+
+    def get_comments(self) -> List[Note]:
+        notes = self._parse_notes_part("word/comments.xml", "comment")
+        if notes:
+            self._enrich_comments_with_threads(notes)
+        return notes
+
+    def _enrich_comments_with_threads(self, notes: List[Note]) -> None:
+        candidates = ["word/commentsExtended.xml", "word/commentsExtensible.xml"]
+        raw = None
+        for cand in candidates:
+            raw = self._read_part(cand)
+            if raw:
+                break
+        if not raw:
+            return
+        try:
+            root = ET.fromstring(raw)
+        except ET.ParseError:
+            return
+        ex_map: Dict[str, Dict[str, Optional[str]]] = {}
+        for elem in root.iter():
+            local = elem.tag.split("}", 1)[1] if "}" in elem.tag else elem.tag
+            if local != "commentEx":
+                continue
+            para_id = None
+            parent_id = None
+            done_val = None
+            for k, v in elem.attrib.items():
+                lname = k.split("}", 1)[1] if "}" in k else k
+                if lname == "paraId":
+                    para_id = v
+                elif lname == "paraIdParent":
+                    parent_id = v
+                elif lname == "done":
+                    done_val = v
+            if para_id:
+                ex_map[para_id] = {"parent": parent_id, "done": done_val}
+        if not ex_map:
+            return
+        para_to_note: Dict[str, Note] = {}
+        for n in notes:
+            if n.para_id:
+                para_to_note[n.para_id] = n
+        for para_id, info in ex_map.items():
+            child = para_to_note.get(para_id)
+            if child is None:
+                continue
+            parent_para = info.get("parent")
+            child.para_id_parent = parent_para
+            done_val = info.get("done")
+            if done_val is not None:
+                child.done = done_val == "1" or done_val.lower() == "true"
+            if parent_para:
+                parent = para_to_note.get(parent_para)
+                if parent is not None:
+                    child.parent_id = parent.note_id
+                    if child not in parent.replies:
+                        parent.replies.append(child)
+
+    def _parse_notes_part(self, part_path: str, note_type: str) -> List[Note]:
+        raw = self._read_part(part_path)
+        if not raw:
+            return []
+        try:
+            root = ET.fromstring(raw)
+        except ET.ParseError:
+            return []
+        rels = self._read_relationships(part_path)
+        has_rels = bool(rels)
+        old_rels = self._rels
+        if has_rels:
+            self._rels = rels
+        notes: List[Note] = []
+        try:
+            tag = self._qn(note_type)
+            for elem in root.findall(tag):
+                nid = elem.get(self._qn("id"))
+                if nid is None:
+                    continue
+                ntype = elem.get(self._qn("type"))
+                if ntype in ("separator", "continuationSeparator", "continuationNotice"):
+                    continue
+                blocks: List = []
+                for child in elem:
+                    if child.tag == self._qn("p"):
+                        para = self._parse_paragraph(child)
+                        if para is not None:
+                            blocks.append(para)
+                    elif child.tag == self._qn("tbl"):
+                        tbl = self._parse_table(child)
+                        if tbl is not None:
+                            blocks.append(tbl)
+                    elif child.tag == self._qn("sdt"):
+                        sdt_c = child.find(self._qn("sdtContent"))
+                        if sdt_c is not None:
+                            for inner in sdt_c:
+                                if inner.tag == self._qn("p"):
+                                    para = self._parse_paragraph(inner)
+                                    if para is not None:
+                                        blocks.append(para)
+                                elif inner.tag == self._qn("tbl"):
+                                    tbl = self._parse_table(inner)
+                                    if tbl is not None:
+                                        blocks.append(tbl)
+                    else:
+                        continue
+                if note_type == "comment":
+                    author = elem.get(self._qn("author"))
+                    date = elem.get(self._qn("date"))
+                    initials = elem.get(self._qn("initials"))
+                    para_id = None
+                    for k, v in elem.attrib.items():
+                        lname = k.split("}", 1)[1] if "}" in k else k
+                        if lname == "paraId":
+                            para_id = v
+                            break
+                    notes.append(Note(note_type=note_type, note_id=str(nid), blocks=blocks, author=author, date=date, initials=initials, para_id=para_id))
+                else:
+                    notes.append(Note(note_type=note_type, note_id=str(nid), blocks=blocks))
+        finally:
+            if has_rels:
+                self._rels = old_rels
+        return notes
+
     # ---- table border / shading helpers (w:tblBorders / w:tcBorders / w:shd) ----
 
     _TABLE_BORDER_EDGES = ("top", "left", "bottom", "right", "insideH", "insideV")
@@ -1135,10 +1619,30 @@ class OoxmlParser:
             tc_borders_elem = tc_pr.find(self._qn("tcBorders"))
             cell_borders = self._parse_borders(tc_borders_elem)
         paragraphs = []
-        for p_elem in tc_elem.findall(self._qn("p")):
-            para = self._parse_paragraph(p_elem)
-            if para is not None:
-                paragraphs.append(para)
+
+        def _collect_cell_paras(container: ET.Element):
+            out: List[Paragraph] = []
+            for elem in container:
+                if elem.tag == self._qn("p"):
+                    para = self._parse_paragraph(elem)
+                    if para is not None:
+                        out.append(para)
+                elif elem.tag == self._qn("sdt"):
+                    sdt_c = elem.find(self._qn("sdtContent"))
+                    if sdt_c is not None:
+                        out.extend(_collect_cell_paras(sdt_c))
+                elif elem.tag == self._qn("tbl"):
+                    # Table inside cell: flatten by extracting its paragraphs in order
+                    tbl_inner = self._parse_table(elem)
+                    if tbl_inner is not None:
+                        for r in tbl_inner.rows:
+                            for c in r.cells:
+                                out.extend(c.content)
+                else:
+                    continue
+            return out
+
+        paragraphs = _collect_cell_paras(tc_elem)
         if not paragraphs:
             paragraphs = [Paragraph(runs=[], style_name="Normal", alignment="left")]
         return Cell(
@@ -1330,6 +1834,123 @@ class OoxmlParser:
                 if _in_supported_result():
                     # field result runs like <w:t>xi</w:t> are suppressed; placeholder will be emitted at end
                     continue
+                fn_ref_el = child.find(self._qn("footnoteReference"))
+                if fn_ref_el is not None:
+                    fid = fn_ref_el.get(self._qn("id"))
+                    if fid is not None:
+                        content.append(NoteReference(note_type="footnote", note_id=str(fid)))
+                        for img in self._extract_images_from_r(child):
+                            content.append(img)
+                        continue
+                en_ref_el = child.find(self._qn("endnoteReference"))
+                if en_ref_el is not None:
+                    eid = en_ref_el.get(self._qn("id"))
+                    if eid is not None:
+                        content.append(NoteReference(note_type="endnote", note_id=str(eid)))
+                        for img in self._extract_images_from_r(child):
+                            content.append(img)
+                        continue
+                cmt_ref_el = child.find(self._qn("commentReference"))
+                if cmt_ref_el is not None:
+                    cid = cmt_ref_el.get(self._qn("id"))
+                    if cid is not None:
+                        content.append(NoteReference(note_type="comment", note_id=str(cid)))
+                        for img in self._extract_images_from_r(child):
+                            content.append(img)
+                        continue
+                crs = child.find(self._qn("commentRangeStart"))
+                if crs is not None:
+                    cid = crs.get(self._qn("id"))
+                    if cid is not None:
+                        content.append(CommentRangeStart(comment_id=str(cid)))
+                    for img in self._extract_images_from_r(child):
+                        content.append(img)
+                    continue
+                cre = child.find(self._qn("commentRangeEnd"))
+                if cre is not None:
+                    cid = cre.get(self._qn("id"))
+                    if cid is not None:
+                        content.append(CommentRangeEnd(comment_id=str(cid)))
+                    for img in self._extract_images_from_r(child):
+                        content.append(img)
+                    continue
+                if child.find(self._qn("footnoteRef")) is not None or child.find(self._qn("endnoteRef")) is not None:
+                    for img in self._extract_images_from_r(child):
+                        content.append(img)
+                    continue
+                if child.find(self._qn("commentRef")) is not None:
+                    for img in self._extract_images_from_r(child):
+                        content.append(img)
+                    continue
+                # w:sym, w:noBreakHyphen, w:softHyphen are direct children of w:r (no w:t)
+                sym_elem = child.find(self._qn("sym"))
+                if sym_elem is not None:
+                    font = sym_elem.get(self._qn("font"))
+                    char_hex = sym_elem.get(self._qn("char"))
+                    decoded = _decode_sym_char(font, char_hex)
+                    if decoded is not None:
+                        rpr_for_font = child.find(self._qn("rPr"))
+                        sym_run = Run(text=decoded)
+                        if font:
+                            sym_run.font_family = font
+                        elif rpr_for_font is not None:
+                            rf_tmp = rpr_for_font.find(self._qn("rFonts"))
+                            if rf_tmp is not None:
+                                ff_tmp = rf_tmp.get(self._qn("ascii")) or rf_tmp.get(self._qn("hAnsi"))
+                                if not ff_tmp:
+                                    ff_tmp = rf_tmp.get(self._qn("eastAsia")) or rf_tmp.get(self._qn("cs"))
+                                if ff_tmp:
+                                    sym_run.font_family = ff_tmp
+                        # inherit other formatting via _parse_run then override text
+                        base = self._parse_run(child)
+                        if base.font_family and not sym_run.font_family:
+                            sym_run.font_family = base.font_family
+                        if base.bold is not None:
+                            sym_run.bold = base.bold
+                        if base.italic is not None:
+                            sym_run.italic = base.italic
+                        if base.font_size is not None:
+                            sym_run.font_size = base.font_size
+                        if base.font_color is not None:
+                            sym_run.font_color = base.font_color
+                        if self._run_is_meaningful(sym_run):
+                            runs.append(sym_run)
+                            content.append(sym_run)
+                        for img in self._extract_images_from_r(child):
+                            content.append(img)
+                        continue
+                if child.find(self._qn("noBreakHyphen")) is not None:
+                    nbh_run = Run(text="\u2011")
+                    base = self._parse_run(child)
+                    if base.font_family:
+                        nbh_run.font_family = base.font_family
+                    if base.bold is not None:
+                        nbh_run.bold = base.bold
+                    if base.italic is not None:
+                        nbh_run.italic = base.italic
+                    if base.font_size is not None:
+                        nbh_run.font_size = base.font_size
+                    runs.append(nbh_run)
+                    content.append(nbh_run)
+                    for img in self._extract_images_from_r(child):
+                        content.append(img)
+                    continue
+                if child.find(self._qn("softHyphen")) is not None:
+                    sh_run = Run(text="\u00AD")
+                    base = self._parse_run(child)
+                    if base.font_family:
+                        sh_run.font_family = base.font_family
+                    if base.bold is not None:
+                        sh_run.bold = base.bold
+                    if base.italic is not None:
+                        sh_run.italic = base.italic
+                    if base.font_size is not None:
+                        sh_run.font_size = base.font_size
+                    runs.append(sh_run)
+                    content.append(sh_run)
+                    for img in self._extract_images_from_r(child):
+                        content.append(img)
+                    continue
                 if has_tab:
                     tab_run = Run(text="\t")
                     runs.append(tab_run)
@@ -1362,6 +1983,55 @@ class OoxmlParser:
                         if rel is not None:
                             href = rel.get("Target")
                 for r_elem in child.iter(self._qn("r")):
+                    # Handle note references inside hyperlink (rare)
+                    fn_h = r_elem.find(self._qn("footnoteReference"))
+                    if fn_h is not None:
+                        fid = fn_h.get(self._qn("id"))
+                        if fid is not None:
+                            content.append(NoteReference(note_type="footnote", note_id=str(fid)))
+                            for img in self._extract_images_from_r(r_elem):
+                                content.append(img)
+                            continue
+                    en_h = r_elem.find(self._qn("endnoteReference"))
+                    if en_h is not None:
+                        eid = en_h.get(self._qn("id"))
+                        if eid is not None:
+                            content.append(NoteReference(note_type="endnote", note_id=str(eid)))
+                            for img in self._extract_images_from_r(r_elem):
+                                content.append(img)
+                            continue
+                    cmt_h = r_elem.find(self._qn("commentReference"))
+                    if cmt_h is not None:
+                        cid = cmt_h.get(self._qn("id"))
+                        if cid is not None:
+                            content.append(NoteReference(note_type="comment", note_id=str(cid)))
+                            for img in self._extract_images_from_r(r_elem):
+                                content.append(img)
+                            continue
+                    crs_h = r_elem.find(self._qn("commentRangeStart"))
+                    if crs_h is not None:
+                        cid = crs_h.get(self._qn("id"))
+                        if cid is not None:
+                            content.append(CommentRangeStart(comment_id=str(cid)))
+                        for img in self._extract_images_from_r(r_elem):
+                            content.append(img)
+                        continue
+                    cre_h = r_elem.find(self._qn("commentRangeEnd"))
+                    if cre_h is not None:
+                        cid = cre_h.get(self._qn("id"))
+                        if cid is not None:
+                            content.append(CommentRangeEnd(comment_id=str(cid)))
+                        for img in self._extract_images_from_r(r_elem):
+                            content.append(img)
+                        continue
+                    if r_elem.find(self._qn("footnoteRef")) is not None or r_elem.find(self._qn("endnoteRef")) is not None:
+                        for img in self._extract_images_from_r(r_elem):
+                            content.append(img)
+                        continue
+                    if r_elem.find(self._qn("commentRef")) is not None:
+                        for img in self._extract_images_from_r(r_elem):
+                            content.append(img)
+                        continue
                     # hyperlink runs do not participate in field state (PAGE never inside hyperlink in practice)
                     run = self._parse_run(r_elem)
                     if run is not None and self._run_is_meaningful(run):
@@ -1371,12 +2041,38 @@ class OoxmlParser:
                         content.append(run)
                     for img in self._extract_images_from_r(r_elem):
                         content.append(img)
+            elif child.tag == self._qn("footnoteReference"):
+                fid = child.get(self._qn("id"))
+                if fid is not None:
+                    content.append(NoteReference(note_type="footnote", note_id=str(fid)))
+                continue
+            elif child.tag == self._qn("endnoteReference"):
+                eid = child.get(self._qn("id"))
+                if eid is not None:
+                    content.append(NoteReference(note_type="endnote", note_id=str(eid)))
+                continue
+            elif child.tag == self._qn("commentReference"):
+                cid = child.get(self._qn("id"))
+                if cid is not None:
+                    content.append(NoteReference(note_type="comment", note_id=str(cid)))
+                continue
+            elif child.tag == self._qn("commentRangeStart"):
+                cid = child.get(self._qn("id"))
+                if cid is not None:
+                    content.append(CommentRangeStart(comment_id=str(cid)))
+                continue
+            elif child.tag == self._qn("commentRangeEnd"):
+                cid = child.get(self._qn("id"))
+                if cid is not None:
+                    content.append(CommentRangeEnd(comment_id=str(cid)))
+                continue
 
         images = [c for c in content if isinstance(c, Image)]
+        has_ranges = any(isinstance(c, (CommentRangeStart, CommentRangeEnd)) for c in content)
+        has_notes = any(isinstance(c, NoteReference) for c in content)
 
         has_layout = any(v is not None for v in [indent_left, indent_right, indent_first_line, indent_hanging, spacing_before, spacing_after, line_spacing]) or bool(tabs)
-        # Keep paragraph if it carries content, non-default style, or layout
-        if runs or images or style_name != "Normal" or has_layout or alignment != "left":
+        if runs or images or has_notes or has_ranges or style_name != "Normal" or has_layout or alignment != "left":
             return Paragraph(
                 runs=runs,
                 style_name=style_name,
@@ -1465,6 +2161,8 @@ class OoxmlParser:
         rfonts = rpr.find(self._qn("rFonts"))
         if rfonts is not None:
             ff = rfonts.get(self._qn("ascii")) or rfonts.get(self._qn("hAnsi"))
+            if not ff:
+                ff = rfonts.get(self._qn("eastAsia")) or rfonts.get(self._qn("cs"))
             if ff:
                 run.font_family = ff
 

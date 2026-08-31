@@ -114,6 +114,21 @@
     .docx-page-number::after{content:"[PAGE]";}
     .docx-num-pages::after{content:"[NUMPAGES]";}
     .docx-page-ref::after{content:"[PAGEREF]";}
+    .docx-footnote-ref{font-size:0.75em;vertical-align:super;line-height:0;}
+    .docx-footnote-ref a,.docx-endnote-ref a,.docx-comment-ref a{color:#4f46e5;text-decoration:none;border-bottom:1px dotted #a5b4fc;}
+    .docx-footnote-ref a:hover,.docx-endnote-ref a:hover,.docx-comment-ref a:hover{color:#3730a3;border-bottom-style:solid;}
+    .docx-comment-ref{font-size:0.75em;vertical-align:super;line-height:0;}
+    .docx-footnotes,.docx-endnotes,.docx-comments{margin-top:2em;padding-top:1em;border-top:1px solid #e5e7eb;font-size:0.9em;}
+    .docx-footnotes h2,.docx-endnotes h2,.docx-comments h2{font-size:13px;font-weight:700;color:#374151;margin:0 0 0.8em;}
+    .docx-footnote,.docx-endnote,.docx-comment{margin:0.6em 0;padding:4px 8px;border-radius:6px;}
+    .docx-footnote:target,.docx-endnote:target,.docx-comment:target,.docx-comment-reply:target{background:#eef2ff;outline:2px solid #a5b4fc;}
+    .docx-comment-reply{margin:0.6em 0 0.6em 1.2em;padding:4px 8px;border-radius:6px;border-left:2px solid #e0e7ff;background:#f8fafc;}
+    .docx-comment-replies{margin-top:0.6em;}
+    .docx-comment-range{background:#fef9c3;border-radius:3px;padding:0 1px;box-decoration-break:clone;-webkit-box-decoration-break:clone;cursor:pointer;transition:background .15s;}
+    .docx-comment-range:hover{background:#fde68a;}
+    .docx-comment-range.is-active{background:#fde68a;outline:1px solid #f59e0b;}
+    .docx-footnote-backref,.docx-endnote-backref,.docx-comment-backref{margin-left:0.5em;color:#6366f1;text-decoration:none;font-weight:600;}
+    .docx-footnote-backref:hover,.docx-endnote-backref:hover,.docx-comment-backref:hover{color:#3730a3;}
     .sidebar-overlay{position:fixed;inset:0;background:rgba(15,23,42,.32);backdrop-filter:blur(2px);z-index:15;opacity:0;visibility:hidden;transition:opacity .18s,visibility .18s;}
     .sidebar-overlay.visible{opacity:1;visibility:visible;}
     @media (max-width:780px){.viewer-sidebar{position:fixed;left:0;top:0;bottom:0;z-index:20;width:280px;min-width:280px;max-width:280px;transform:translateX(-100%);transition:transform .24s cubic-bezier(.2,.8,.2,1);opacity:1;pointer-events:auto;border-right:1px solid #e5e7eb;box-shadow:12px 0 40px rgba(15,23,42,.12);}
@@ -173,7 +188,7 @@
   <button id="exit-focus" class="sidebar-toggle-main" type="button" hidden>Show Full Document</button>
 </div>
 <div class="docx-page" style="position: relative; width: 816px; max-width: calc(100% - 32px); min-height: 1056px; box-sizing: border-box;">
-<div class="docx-content" style="position: relative; margin-left: 96px; margin-top: 96px; width: 624px; max-width: calc(100% - 112px); min-height: 864px; box-sizing: border-box;">
+<div class="docx-content" style="position: relative; margin-left: 120px; margin-top: 96px; width: 576px; max-width: calc(100% - 136px); min-height: 864px; box-sizing: border-box;">
 <div class="docx-block"><p>Small floating image.</p></div>
 <div class="docx-block"><p></p></div>
 <div class="docx-block"><p>Large floating image.</p></div>
@@ -524,6 +539,21 @@
     if(document.readyState==='complete') layoutAllTabs(); else window.addEventListener('load', layoutAllTabs);
     window.addEventListener('resize', layoutAllTabs);
     setTimeout(layoutAllTabs,100); setTimeout(layoutAllTabs,500);
+    document.addEventListener('click', function(e){
+      var m=e.target.closest('.docx-comment-range');
+      if(m){
+        var cid=m.getAttribute('data-comment-id');
+        var el=document.getElementById('comment-'+cid);
+        if(el){ el.scrollIntoView({behavior:'smooth',block:'center'}); el.classList.add('is-active'); setTimeout(function(){el.classList.remove('is-active');},1500); var rs=document.querySelectorAll('.docx-comment-range[data-comment-id="'+cid+'"]'); rs.forEach(function(x){x.classList.add('is-active'); setTimeout(function(){x.classList.remove('is-active');},1500);}); }
+        return;
+      }
+      var c=e.target.closest('.docx-comment, .docx-comment-reply');
+      if(c && c.id && c.id.indexOf('comment-')===0){
+        var cid=c.id.replace('comment-','');
+        var rs=document.querySelectorAll('.docx-comment-range[data-comment-id="'+cid+'"]');
+        if(rs.length){ rs[0].scrollIntoView({behavior:'smooth',block:'center'}); rs.forEach(function(x){x.classList.add('is-active'); setTimeout(function(){x.classList.remove('is-active');},1500);}); }
+      }
+    });
     window.__viewer={setSidebarOpen:setSidebarOpen,isSidebarOpen:isSidebarOpen,setActive:setActive};
   })();
   </script>

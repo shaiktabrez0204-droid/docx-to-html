@@ -16,7 +16,7 @@ from semantic.numbering import (
     cross_validate,
     validate_hierarchy,
 )
-from core.model import Paragraph, Table, Section, HeaderFooter, Run
+from core.model import Paragraph, Table, Section, HeaderFooter, Run, Note
 from core.anchoring import associate_floating_images
 from output.html_renderer import render_html
 
@@ -168,10 +168,24 @@ def _apply_run_resolution_to_sections(sections, registry: StyleRegistry,
                                     _apply_run_resolution(p, registry, doc_defaults)
 
 
+def _apply_run_resolution_to_notes(notes: List[Note], registry: StyleRegistry,
+                                   doc_defaults: ResolvedStyle) -> None:
+    for note in notes:
+        for blk in note.blocks:
+            if isinstance(blk, Paragraph):
+                _apply_run_resolution(blk, registry, doc_defaults)
+            elif isinstance(blk, Table):
+                for row in blk.rows:
+                    for cell in row.cells:
+                        for p in cell.content:
+                            _apply_run_resolution(p, registry, doc_defaults)
+
+
 class ConversionResult:
     def __init__(self, paragraphs, registry, hierarchy, toc, html, image_assets=None,
                  numbering_model=None, numbering_validation=None, hierarchy_issues=None,
-                 blocks=None, sections=None, even_headers=False):
+                 blocks=None, sections=None, even_headers=False, footnotes=None, endnotes=None,
+                 comments=None):
         self.paragraphs = paragraphs
         self.blocks = blocks if blocks is not None else paragraphs
         self.sections = sections or []
@@ -184,6 +198,9 @@ class ConversionResult:
         self.numbering_model = numbering_model
         self.numbering_validation = numbering_validation or []
         self.hierarchy_issues = hierarchy_issues or []
+        self.footnotes: List[Note] = footnotes or []
+        self.endnotes: List[Note] = endnotes or []
+        self.comments: List[Note] = comments or []
 
     def flat_headings(self):
         return flatten_hierarchy(self.hierarchy)
@@ -227,18 +244,67 @@ def convert_docx(docx_path: str, title: str = "Converted Document") -> Conversio
     sections = parser.get_sections()
     even_headers = parser.get_even_headers_flag()
     page_layout = parser.get_page_layout()
+    footnotes = parser.get_footnotes()
+    endnotes = parser.get_endnotes()
+    comments = parser.get_comments()
+
+    def _assign_column_indices():
+        sec_map = {}
+        for b in blocks:
+            if isinstance(b, Paragraph):
+                for img in b.images:
+                    if img.section_index is not None:
+                        sec_map.setdefault(img.section_index, []).append(img)
+            elif isinstance(b, Table):
+                for row in b.rows:
+                    for cell in row.cells:
+                        for p in cell.content:
+                            for img in p.images:
+                                if img.section_index is not None:
+                                    sec_map.setdefault(img.section_index, []).append(img)
+        for sec in sections:
+            cols = sec.page_layout.cols_num if sec.page_layout else 1
+            if cols <= 1:
+                continue
+            col_imgs = []
+            for b in blocks:
+                sec_idx = None
+                if isinstance(b, Paragraph):
+                    for img in b.images:
+                        if img.relative_from_horizontal == "column" or img.relative_from_vertical == "column":
+                            if img.section_index == sec.index:
+                                col_imgs.append(img)
+                elif isinstance(b, Table):
+                    for row in b.rows:
+                        for cell in row.cells:
+                            for p in cell.content:
+                                for img in p.images:
+                                    if (img.relative_from_horizontal == "column" or img.relative_from_vertical == "column") and img.section_index == sec.index:
+                                        col_imgs.append(img)
+            if not col_imgs:
+                continue
+            for order, img in enumerate(col_imgs):
+                if img.column_index is not None:
+                    continue
+                img.column_index = (order * cols) // len(col_imgs) if len(col_imgs) else 0
+
+    _assign_column_indices()
 
     # Inherited run typography (docDefaults + styles) must also reach runs that
     # live inside tables and inside header/footer parts, not just top-level body
     # paragraphs.
     _apply_run_resolution_to_blocks(blocks, registry, doc_defaults)
     _apply_run_resolution_to_sections(sections, registry, doc_defaults)
+    _apply_run_resolution_to_notes(footnotes, registry, doc_defaults)
+    _apply_run_resolution_to_notes(endnotes, registry, doc_defaults)
+    _apply_run_resolution_to_notes(comments, registry, doc_defaults)
 
     default_font_size_pt = (doc_defaults.font_size or 22) / 2.0
     html = render_html(blocks, title=title, toc=toc,
                        assets=parser.get_image_assets(), page_layout=page_layout,
                        sections=sections, even_headers=even_headers,
-                       default_font_size_pt=default_font_size_pt)
+                       default_font_size_pt=default_font_size_pt,
+                       footnotes=footnotes, endnotes=endnotes, comments=comments)
     return ConversionResult(
         paragraphs, registry, hierarchy, toc, html,
         image_assets=parser.get_image_assets(),
@@ -248,4 +314,7 @@ def convert_docx(docx_path: str, title: str = "Converted Document") -> Conversio
         blocks=blocks,
         sections=sections,
         even_headers=even_headers,
+        footnotes=footnotes,
+        endnotes=endnotes,
+        comments=comments,
     )

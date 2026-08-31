@@ -1,9 +1,0 @@
-- generic [ref=f13e2]:
-  - heading "DOCX → HTML Converter" [level=1] [ref=f13e3]
-  - paragraph [ref=f13e4]: Upload a .docx file to convert it to HTML and preview / download the result.
-  - generic [ref=f13e6]:
-    - generic [ref=f13e7]:
-      - button "Choose File" [ref=f13e8]
-      - paragraph [ref=f13e9]: Only .docx files (max 25 MB).
-    - paragraph [ref=f13e10]:
-      - button "Upload & Convert" [ref=f13e11] [cursor=pointer]
