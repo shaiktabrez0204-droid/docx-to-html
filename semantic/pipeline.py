@@ -18,6 +18,7 @@ from semantic.numbering import (
 )
 from core.model import Paragraph, Table, Section, HeaderFooter, Run, Note
 from core.anchoring import associate_floating_images
+from core.layout import build_pages_from_sections, resolve_layout_state, LayoutState
 from output.html_renderer import render_html
 
 def _apply_para_style(para: Paragraph, rs: ResolvedStyle) -> None:
@@ -185,7 +186,7 @@ class ConversionResult:
     def __init__(self, paragraphs, registry, hierarchy, toc, html, image_assets=None,
                  numbering_model=None, numbering_validation=None, hierarchy_issues=None,
                  blocks=None, sections=None, even_headers=False, footnotes=None, endnotes=None,
-                 comments=None):
+                 comments=None, layout_state=None, pages=None):
         self.paragraphs = paragraphs
         self.blocks = blocks if blocks is not None else paragraphs
         self.sections = sections or []
@@ -201,6 +202,8 @@ class ConversionResult:
         self.footnotes: List[Note] = footnotes or []
         self.endnotes: List[Note] = endnotes or []
         self.comments: List[Note] = comments or []
+        self.layout_state = layout_state
+        self.pages = pages or []
 
     def flat_headings(self):
         return flatten_hierarchy(self.hierarchy)
@@ -248,6 +251,55 @@ def convert_docx(docx_path: str, title: str = "Converted Document") -> Conversio
     endnotes = parser.get_endnotes()
     comments = parser.get_comments()
 
+    # Build pages from sections (first-class layout state)
+    pages = build_pages_from_sections(sections)
+
+    # Assign floating images to their pages for layout resolution
+    for page in pages:
+        page.floating_images = []
+    for b in blocks:
+        if isinstance(b, Paragraph):
+            for img in b.images:
+                if img.wrap_type == "anchor":
+                    sec_idx = getattr(img, "section_index", 0)
+                    for page in pages:
+                        if page.section_index == sec_idx:
+                            page.floating_images.append(img)
+                            break
+        elif isinstance(b, Table):
+            for row in b.rows:
+                for cell in row.cells:
+                    for p in cell.content:
+                        for img in p.images:
+                            if img.wrap_type == "anchor":
+                                sec_idx = getattr(img, "section_index", 0)
+                                for page in pages:
+                                    if page.section_index == sec_idx:
+                                        page.floating_images.append(img)
+                                        break
+
+    # Also assign header/footer floating images
+    for page in pages:
+        for hf in [page.header_default, page.header_first, page.header_even,
+                   page.footer_default, page.footer_first, page.footer_even]:
+            if hf:
+                for blk in hf.blocks:
+                    if isinstance(blk, Paragraph):
+                        for img in blk.images:
+                            if img.wrap_type == "anchor":
+                                page.floating_images.append(img)
+                    elif isinstance(blk, Table):
+                        for row in blk.rows:
+                            for cell in row.cells:
+                                for p in cell.content:
+                                    for img in p.images:
+                                        if img.wrap_type == "anchor":
+                                            page.floating_images.append(img)
+
+    # Resolve complete layout state (coordinates, page ownership)
+    layout_state = resolve_layout_state(blocks, sections, pages)
+
+    # Rudimentary column index assignment for column-relative images
     def _assign_column_indices():
         sec_map = {}
         for b in blocks:
@@ -304,7 +356,8 @@ def convert_docx(docx_path: str, title: str = "Converted Document") -> Conversio
                        assets=parser.get_image_assets(), page_layout=page_layout,
                        sections=sections, even_headers=even_headers,
                        default_font_size_pt=default_font_size_pt,
-                       footnotes=footnotes, endnotes=endnotes, comments=comments)
+                       footnotes=footnotes, endnotes=endnotes, comments=comments,
+                       layout_state=layout_state, pages=pages)
     return ConversionResult(
         paragraphs, registry, hierarchy, toc, html,
         image_assets=parser.get_image_assets(),
@@ -317,4 +370,6 @@ def convert_docx(docx_path: str, title: str = "Converted Document") -> Conversio
         footnotes=footnotes,
         endnotes=endnotes,
         comments=comments,
+        layout_state=layout_state,
+        pages=pages,
     )

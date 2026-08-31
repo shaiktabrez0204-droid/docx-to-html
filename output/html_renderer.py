@@ -1928,7 +1928,8 @@ def _render_comments_section(comments, assets, page) -> str:
 
 def render_html(blocks=None, title: str = "Converted Document", toc=None,
                 assets=None, page_layout=None, paragraphs=None, sections=None, even_headers=False,
-                default_font_size_pt: float = 11.0, footnotes=None, endnotes=None, comments=None) -> str:
+                default_font_size_pt: float = 11.0, footnotes=None, endnotes=None, comments=None,
+                layout_state=None, pages=None) -> str:
     """Render a full HTML document from normalized blocks.
 
     `blocks` is a document-order list of Paragraph | Table. Heading detection
@@ -1942,6 +1943,8 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
     `default_font_size_pt` is the document's effective default font size (from
     docDefaults rPrDefault); it sets the .docx-content base so inherited runs
     render at the correct size and inline run typography always wins.
+    `layout_state` is the resolved LayoutState from core.layout (first-class page/layout).
+    `pages` is the list of Page objects from core.layout.
     """
     global DEFAULT_FONT_HALF_POINTS, _CURRENT_SECTIONS, _FOOTNOTE_TOTALS, _FOOTNOTE_CUR, _ENDNOTE_TOTALS, _ENDNOTE_CUR, _COMMENT_TOTALS, _COMMENT_CUR, _FOOTNOTE_REF_IDS, _ENDNOTE_REF_IDS, _COMMENT_REF_IDS, _COMMENT_RANGE_LOGICAL, _COMMENT_VALID_IDS, _COMMENT_RANGE_VALID_IDS
     _CURRENT_SECTIONS = sections
@@ -1956,6 +1959,14 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
         blocks = paragraphs if paragraphs is not None else []
     if page_layout is None:
         page_layout = PageLayout()
+    if layout_state is None:
+        # Fallback for tests/callers that don't provide layout_state
+        from core.layout import build_pages_from_sections, resolve_layout_state
+        if sections:
+            pages = build_pages_from_sections(sections)
+            layout_state = resolve_layout_state(blocks, sections, pages)
+        else:
+            pages = []
     _FOOTNOTE_TOTALS, _ENDNOTE_TOTALS, _COMMENT_TOTALS = _collect_note_totals(blocks)
     _FOOTNOTE_CUR = {}
     _ENDNOTE_CUR = {}
@@ -2035,163 +2046,329 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
                 except Exception:
                     pass
 
-    content_floats = []   # list of (img, anchor_idx)
-    page_floats = []      # list of (img, anchor_idx)
-    block_html = []
-    dom_idx = 0
-    idx = 0
-    while idx < len(blocks):
-        b = blocks[idx]
-        if b is first_h1:
-            _, _, externals = _render_paragraph_html(b, assets, page_layout)
-            _assign_float_anchor(externals, -1)
-            _set_inline_anchors(b, -1)
-            for container, img in externals:
-                if container == "page":
-                    page_floats.append((img, -1))
-                else:
-                    content_floats.append((img, -1))
-            idx += 1
-            continue
-        if isinstance(b, Table):
-            cur_anchor = dom_idx
-            block_html.append(_wrap_block(render_table(b, assets, page_layout, table_anchor=cur_anchor)))
-            dom_idx += 1
-            idx += 1
-            continue
-        if isinstance(b, Paragraph) and _is_list_item(b):
-            is_bullet = b.numbering_format == "bullet"
-            run = []
-            j = idx
-            while j < len(blocks):
-                cur = blocks[j]
-                if cur is first_h1:
-                    break
-                if not isinstance(cur, Paragraph) or not _is_list_item(cur):
-                    break
-                if (cur.numbering_format == "bullet") != is_bullet:
-                    break
-                run.append(cur)
-                j += 1
-            # anchor for all floats inside this list block is the list's dom index
-            list_anchor = dom_idx
-            for item in run:
-                _set_inline_anchors(item, list_anchor)
-            tag = "ul" if is_bullet else "ol"
-            cls = "docx-bullet-list" if is_bullet else "docx-ordered-list"
-            lis = []
-            for item in run:
-                collected = []
-                inner, needs_relative = _render_content(item, assets, page_layout, collected)
-                label = _list_label(item)
-                if label:
-                    pcls = "docx-bullet" if item.numbering_format == "bullet" else "docx-number"
-                    inner = '<span class="%s">%s</span> %s' % (pcls, html.escape(label), inner)
-                layout = _paragraph_layout_style(item)
-                extra = []
-                if needs_relative:
-                    extra.append("position: relative")
-                if layout:
-                    extra.append(layout)
-                style_attr = ' style="%s"' % ";".join(extra) if extra else ""
-                _assign_float_anchor(collected, list_anchor)
-                for container, img in collected:
-                    if container == "page":
-                        page_floats.append((img, list_anchor))
+    # Use layout_state if available, otherwise fall back to single-page logic
+    if layout_state and pages:
+        # Render each page with its own content
+        page_html_parts = []
+        for page in pages:
+            # Collect blocks for this page (for now, all blocks in section go to its page)
+            # In future, real pagination will distribute blocks across pages
+            page_blocks = []
+            page_content_floats = []
+            page_page_floats = []
+            page_dom_idx = 0
+
+            # Determine which blocks belong to this page's section
+            sec_idx = page.section_index
+            for b in blocks:
+                # Check if block belongs to this section using block.section_index
+                if getattr(b, "section_index", 0) == sec_idx:
+                    page_blocks.append(b)
+
+            # Render blocks for this page
+            block_html = []
+            b_idx = 0
+            while b_idx < len(page_blocks):
+                b = page_blocks[b_idx]
+                # Skip first_h1 - it's rendered in the title bar only
+                if b is first_h1:
+                    b_idx += 1
+                    continue
+                if isinstance(b, Table):
+                    cur_anchor = page_dom_idx
+                    block_html.append(_wrap_block(render_table(b, assets, page.page_layout, table_anchor=cur_anchor)))
+                    page_dom_idx += 1
+                    b_idx += 1
+                    continue
+                if isinstance(b, Paragraph) and _is_list_item(b):
+                    is_bullet = b.numbering_format == "bullet"
+                    run = []
+                    j = b_idx
+                    # Collect consecutive list items of same type
+                    while j < len(page_blocks):
+                        cur = page_blocks[j]
+                        if not isinstance(cur, Paragraph) or not _is_list_item(cur):
+                            break
+                        if (cur.numbering_format == "bullet") != is_bullet:
+                            break
+                        run.append(cur)
+                        j += 1
+                    # anchor for all floats inside this list block is the list's dom index
+                    list_anchor = page_dom_idx
+                    for item in run:
+                        _set_inline_anchors(item, list_anchor)
+                    tag = "ul" if is_bullet else "ol"
+                    cls = "docx-bullet-list" if is_bullet else "docx-ordered-list"
+                    lis = []
+                    for item in run:
+                        collected = []
+                        inner, needs_relative = _render_content(item, assets, page.page_layout, collected)
+                        label = _list_label(item)
+                        if label:
+                            pcls = "docx-bullet" if item.numbering_format == "bullet" else "docx-number"
+                            inner = '<span class="%s">%s</span> %s' % (pcls, html.escape(label), inner)
+                        layout = _paragraph_layout_style(item)
+                        extra = []
+                        if needs_relative:
+                            extra.append("position: relative")
+                        if layout:
+                            extra.append(layout)
+                        style_attr = ' style="%s"' % ";".join(extra) if extra else ""
+                        _assign_float_anchor(collected, list_anchor)
+                        for container, img in collected:
+                            if container == "page":
+                                page_page_floats.append((img, list_anchor))
+                            else:
+                                page_content_floats.append((img, list_anchor))
+                        if not inner.strip() and not style_attr:
+                            li_inner = "<p></p>"
+                        elif not inner.strip():
+                            li_inner = "<p%s></p>" % style_attr
+                        else:
+                            li_inner = "<p%s>%s</p>" % (style_attr, inner) if style_attr else "<p>%s</p>" % inner
+                        lis.append("<li>%s</li>" % li_inner)
+                    block_html.append(_wrap_block('<%s class="docx-list %s">%s</%s>' % (tag, cls, "".join(lis), tag)))
+                    page_dom_idx += 1
+                    b_idx = j  # Skip processed items
+                    continue
+                if isinstance(b, Paragraph):
+                    cur_anchor = page_dom_idx
+                    _set_inline_anchors(b, cur_anchor)
+                    html_str, _n, externals = _render_paragraph_html(b, assets, page.page_layout)
+                    _assign_float_anchor(externals, cur_anchor)
+                    if b.heading_level:
+                        wrapped = _wrap_block(html_str, b.heading_id, max(1, min(b.heading_level, 6)))
                     else:
-                        content_floats.append((img, list_anchor))
-                if not inner.strip() and not style_attr:
-                    li_inner = "<p></p>"
-                elif not inner.strip():
-                    li_inner = "<p%s></p>" % style_attr
+                        wrapped = _wrap_block(html_str)
+                    block_html.append(wrapped)
+                    page_dom_idx += 1
+                    for container, img in externals:
+                        if container == "page":
+                            page_page_floats.append((img, cur_anchor))
+                        else:
+                            page_content_floats.append((img, cur_anchor))
+
+            content_inner = "\n".join(block_html)
+
+            # Header/footer for this page
+            header_html = ""
+            footer_html = ""
+            if page.header_default:
+                inner = _render_hf_blocks(page.header_default.blocks, assets, page.page_layout)
+                if inner.strip():
+                    header_html = '<header class="docx-header docx-header-default" data-type="default">%s</header>' % inner
+            if page.footer_default:
+                inner = _render_hf_blocks(page.footer_default.blocks, assets, page.page_layout)
+                if inner.strip():
+                    footer_html = '<footer class="docx-footer docx-footer-default" data-type="default">%s</footer>' % inner
+
+            content_style = (
+                "position: relative;"
+                " margin-left: %dpx; margin-top: %dpx;"
+                " width: %dpx; max-width: calc(100%% - %dpx); min-height: %dpx; box-sizing: border-box;"
+                % (page.page_layout.margin_left_px, page.page_layout.margin_top_px,
+                   page.page_layout.content_width_px, page.page_layout.margin_left_px + 16,
+                   page.page_layout.content_height_px)
+            )
+
+            def _float_wrap(img, anchor_idx):
+                inner = render_float_image(img, assets, page.page_layout)
+                cids = getattr(img, '_float_comment_ids', None)
+                if cids:
+                    cid = html.escape(cids[-1], quote=True)
+                    if 'data-comment-id' not in inner:
+                        inner = inner.replace('<img ', '<img data-comment-id="%s" ' % cid, 1)
+                    return '<div class="docx-float-wrap" data-anchor="%d" data-comment-id="%s">%s</div>' % (int(anchor_idx), cid, inner)
+                return '<div class="docx-float-wrap" data-anchor="%d">%s</div>' % (int(anchor_idx), inner)
+
+            content_floats_html = "\n".join(_float_wrap(im, a) for im, a in page_content_floats)
+            page_floats_html = "\n".join(_float_wrap(im, a) for im, a in page_page_floats)
+
+            content_block = '<div class="docx-content" style="%s">\n%s\n%s\n</div>' % (
+                content_style,
+                content_inner,
+                content_floats_html,
+            )
+
+            footnotes_html = _render_footnotes_section(footnotes, assets, page.page_layout)
+            endnotes_html = _render_endnotes_section(endnotes, assets, page.page_layout)
+            comments_html = _render_comments_section(comments, assets, page.page_layout)
+            page_inner = "\n".join([p for p in [header_html, content_block, footnotes_html, endnotes_html, comments_html, footer_html] if p])
+            page_style = "position: relative; width: %dpx; max-width: calc(100%%-32px); min-height: %dpx; box-sizing: border-box;" % (
+                page.page_layout.page_width_px, page.page_layout.page_height_px)
+            page_block = '<div class="docx-page" style="%s">\n%s\n%s\n</div>' % (
+                page_style,
+                page_inner,
+                page_floats_html,
+            )
+            page_html_parts.append(page_block)
+
+        # Use first page layout for overall dimensions (fallback)
+        main_page_layout = pages[0].page_layout if pages else page_layout
+    else:
+        # Legacy single-page rendering (for backward compatibility)
+        content_floats = []   # list of (img, anchor_idx)
+        page_floats = []      # list of (img, anchor_idx)
+        block_html = []
+        dom_idx = 0
+        idx = 0
+        while idx < len(blocks):
+            b = blocks[idx]
+            if b is first_h1:
+                _, _, externals = _render_paragraph_html(b, assets, page_layout)
+                _assign_float_anchor(externals, -1)
+                _set_inline_anchors(b, -1)
+                for container, img in externals:
+                    if container == "page":
+                        page_floats.append((img, -1))
+                    else:
+                        content_floats.append((img, -1))
+                idx += 1
+                continue
+            if isinstance(b, Table):
+                cur_anchor = dom_idx
+                block_html.append(_wrap_block(render_table(b, assets, page_layout, table_anchor=cur_anchor)))
+                dom_idx += 1
+                idx += 1
+                continue
+            if isinstance(b, Paragraph) and _is_list_item(b):
+                is_bullet = b.numbering_format == "bullet"
+                run = []
+                j = idx
+                while j < len(blocks):
+                    cur = blocks[j]
+                    if cur is first_h1:
+                        break
+                    if not isinstance(cur, Paragraph) or not _is_list_item(cur):
+                        break
+                    if (cur.numbering_format == "bullet") != is_bullet:
+                        break
+                    run.append(cur)
+                    j += 1
+                # anchor for all floats inside this list block is the list's dom index
+                list_anchor = dom_idx
+                for item in run:
+                    _set_inline_anchors(item, list_anchor)
+                tag = "ul" if is_bullet else "ol"
+                cls = "docx-bullet-list" if is_bullet else "docx-ordered-list"
+                lis = []
+                for item in run:
+                    collected = []
+                    inner, needs_relative = _render_content(item, assets, page_layout, collected)
+                    label = _list_label(item)
+                    if label:
+                        pcls = "docx-bullet" if item.numbering_format == "bullet" else "docx-number"
+                        inner = '<span class="%s">%s</span> %s' % (pcls, html.escape(label), inner)
+                    layout = _paragraph_layout_style(item)
+                    extra = []
+                    if needs_relative:
+                        extra.append("position: relative")
+                    if layout:
+                        extra.append(layout)
+                    style_attr = ' style="%s"' % ";".join(extra) if extra else ""
+                    _assign_float_anchor(collected, list_anchor)
+                    for container, img in collected:
+                        if container == "page":
+                            page_floats.append((img, list_anchor))
+                        else:
+                            content_floats.append((img, list_anchor))
+                    if not inner.strip() and not style_attr:
+                        li_inner = "<p></p>"
+                    elif not inner.strip():
+                        li_inner = "<p%s></p>" % style_attr
+                    else:
+                        li_inner = "<p%s>%s</p>" % (style_attr, inner) if style_attr else "<p>%s</p>" % inner
+                    lis.append("<li>%s</li>" % li_inner)
+                block_html.append(_wrap_block('<%s class="docx-list %s">%s</%s>' % (tag, cls, "".join(lis), tag)))
+                dom_idx += 1
+                idx = j
+                continue
+            if isinstance(b, Paragraph):
+                cur_anchor = dom_idx
+                _set_inline_anchors(b, cur_anchor)
+                html_str, _n, externals = _render_paragraph_html(b, assets, page_layout)
+                _assign_float_anchor(externals, cur_anchor)
+                if b.heading_level:
+                    wrapped = _wrap_block(html_str, b.heading_id, max(1, min(b.heading_level, 6)))
                 else:
-                    li_inner = "<p%s>%s</p>" % (style_attr, inner) if style_attr else "<p>%s</p>" % inner
-                lis.append("<li>%s</li>" % li_inner)
-            block_html.append(_wrap_block('<%s class="docx-list %s">%s</%s>' % (tag, cls, "".join(lis), tag)))
-            dom_idx += 1
-            idx = j
-            continue
-        if isinstance(b, Paragraph):
-            cur_anchor = dom_idx
-            _set_inline_anchors(b, cur_anchor)
-            html_str, _n, externals = _render_paragraph_html(b, assets, page_layout)
-            _assign_float_anchor(externals, cur_anchor)
-            if b.heading_level:
-                wrapped = _wrap_block(html_str, b.heading_id, max(1, min(b.heading_level, 6)))
-            else:
-                wrapped = _wrap_block(html_str)
-            block_html.append(wrapped)
-            dom_idx += 1
-            for container, img in externals:
-                if container == "page":
-                    page_floats.append((img, cur_anchor))
-                else:
-                    content_floats.append((img, cur_anchor))
-        idx += 1
+                    wrapped = _wrap_block(html_str)
+                block_html.append(wrapped)
+                dom_idx += 1
+                for container, img in externals:
+                    if container == "page":
+                        page_floats.append((img, cur_anchor))
+                    else:
+                        content_floats.append((img, cur_anchor))
+            idx += 1
 
-    content_inner = "\n".join(block_html)
+        content_inner = "\n".join(block_html)
 
-    header_html_parts = []
-    footer_html_parts = []
-    if sections:
-        seen_hf = set()
-        for sec in sections:
-            for typ in ["default", "first", "even"]:
-                hf = sec.headers.get(typ)
-                if hf and hf.target not in seen_hf:
-                    _hf_page = sec.page_layout or page_layout
-                    inner = _render_hf_blocks(hf.blocks, assets, _hf_page)
-                    if inner.strip():
-                        header_html_parts.append('<header class="docx-header docx-header-%s" data-type="%s">%s</header>' % (typ, typ, inner))
-                        seen_hf.add(hf.target)
-                hf = sec.footers.get(typ)
-                if hf and hf.target not in seen_hf:
-                    _hf_page = sec.page_layout or page_layout
-                    inner = _render_hf_blocks(hf.blocks, assets, _hf_page)
-                    if inner.strip():
-                        footer_html_parts.append('<footer class="docx-footer docx-footer-%s" data-type="%s">%s</footer>' % (typ, typ, inner))
-                        seen_hf.add(hf.target)
-    header_block = "\n".join(header_html_parts)
-    footer_block = "\n".join(footer_html_parts)
+        header_html_parts = []
+        footer_html_parts = []
+        if sections:
+            seen_hf = set()
+            for sec in sections:
+                for typ in ["default", "first", "even"]:
+                    hf = sec.headers.get(typ)
+                    if hf and hf.target not in seen_hf:
+                        _hf_page = sec.page_layout or page_layout
+                        inner = _render_hf_blocks(hf.blocks, assets, _hf_page)
+                        if inner.strip():
+                            header_html_parts.append('<header class="docx-header docx-header-%s" data-type="%s">%s</header>' % (typ, typ, inner))
+                            seen_hf.add(hf.target)
+                    hf = sec.footers.get(typ)
+                    if hf and hf.target not in seen_hf:
+                        _hf_page = sec.page_layout or page_layout
+                        inner = _render_hf_blocks(hf.blocks, assets, _hf_page)
+                        if inner.strip():
+                            footer_html_parts.append('<footer class="docx-footer docx-footer-%s" data-type="%s">%s</footer>' % (typ, typ, inner))
+                            seen_hf.add(hf.target)
+        header_block = "\n".join(header_html_parts)
+        footer_block = "\n".join(footer_html_parts)
 
-    content_style = (
-        "position: relative;"
-        " margin-left: %dpx; margin-top: %dpx;"
-        " width: %dpx; max-width: calc(100%% - %dpx); min-height: %dpx; box-sizing: border-box;"
-        % (page_layout.margin_left_px, page_layout.margin_top_px,
-           page_layout.content_width_px, page_layout.margin_left_px + 16,
-           page_layout.content_height_px)
-    )
-    def _float_wrap(img, anchor_idx):
-        inner = render_float_image(img, assets, page_layout)
-        cids = getattr(img, '_float_comment_ids', None)
-        if cids:
-            cid = html.escape(cids[-1], quote=True)
-            if 'data-comment-id' not in inner:
-                inner = inner.replace('<img ', '<img data-comment-id="%s" ' % cid, 1)
-            return '<div class="docx-float-wrap" data-anchor="%d" data-comment-id="%s">%s</div>' % (int(anchor_idx), cid, inner)
-        return '<div class="docx-float-wrap" data-anchor="%d">%s</div>' % (int(anchor_idx), inner)
+        content_style = (
+            "position: relative;"
+            " margin-left: %dpx; margin-top: %dpx;"
+            " width: %dpx; max-width: calc(100%% - %dpx); min-height: %dpx; box-sizing: border-box;"
+            % (page_layout.margin_left_px, page_layout.margin_top_px,
+               page_layout.content_width_px, page_layout.margin_left_px + 16,
+               page_layout.content_height_px)
+        )
+        def _float_wrap(img, anchor_idx):
+            inner = render_float_image(img, assets, page_layout)
+            cids = getattr(img, '_float_comment_ids', None)
+            if cids:
+                cid = html.escape(cids[-1], quote=True)
+                if 'data-comment-id' not in inner:
+                    inner = inner.replace('<img ', '<img data-comment-id="%s" ' % cid, 1)
+                return '<div class="docx-float-wrap" data-anchor="%d" data-comment-id="%s">%s</div>' % (int(anchor_idx), cid, inner)
+            return '<div class="docx-float-wrap" data-anchor="%d">%s</div>' % (int(anchor_idx), inner)
 
-    content_floats_html = "\n".join(_float_wrap(im, a) for im, a in content_floats)
-    page_floats_html = "\n".join(_float_wrap(im, a) for im, a in page_floats)
+        content_floats_html = "\n".join(_float_wrap(im, a) for im, a in content_floats)
+        page_floats_html = "\n".join(_float_wrap(im, a) for im, a in page_floats)
 
-    content_block = '<div class="docx-content" style="%s">\n%s\n%s\n</div>' % (
-        content_style,
-        content_inner,
-        content_floats_html,
-    )
+        content_block = '<div class="docx-content" style="%s">\n%s\n%s\n</div>' % (
+            content_style,
+            content_inner,
+            content_floats_html,
+        )
 
-    footnotes_html = _render_footnotes_section(footnotes, assets, page_layout)
-    endnotes_html = _render_endnotes_section(endnotes, assets, page_layout)
-    comments_html = _render_comments_section(comments, assets, page_layout)
-    page_inner = "\n".join([p for p in [header_block, content_block, footnotes_html, endnotes_html, comments_html, footer_block] if p])
-    page_style = "position: relative; width: %dpx; max-width: calc(100%% - 32px); min-height: %dpx; box-sizing: border-box;" % (
-        page_layout.page_width_px, page_layout.page_height_px)
-    page_block = '<div class="docx-page" style="%s">\n%s\n%s\n</div>' % (
-        page_style,
-        page_inner,
-        page_floats_html,
-    )
+        footnotes_html = _render_footnotes_section(footnotes, assets, page_layout)
+        endnotes_html = _render_endnotes_section(endnotes, assets, page_layout)
+        comments_html = _render_comments_section(comments, assets, page_layout)
+        page_inner = "\n".join([p for p in [header_block, content_block, footnotes_html, endnotes_html, comments_html, footer_block] if p])
+        page_style = "position: relative; width: %dpx; max-width: calc(100%%-32px); min-height: %dpx; box-sizing: border-box;" % (
+            page_layout.page_width_px, page_layout.page_height_px)
+        page_block = '<div class="docx-page" style="%s">\n%s\n%s\n</div>' % (
+            page_style,
+            page_inner,
+            page_floats_html,
+        )
+        page_html_parts = [page_block]
+        main_page_layout = page_layout
+
+    # Join all pages
+    pages_html = "\n".join(page_html_parts)
 
     toc_tree_html = render_sidebar_toc(toc) if toc else ""
     if toc_tree_html:
@@ -2250,7 +2427,7 @@ def render_html(blocks=None, title: str = "Converted Document", toc=None,
         + sidebar_html + '\n'
         + '<main class="doc-main" id="doc-main">\n'
         + doc_toolbar
-        + page_block + '\n'
+        + pages_html + '\n'
         '</main>\n'
         '</div>'
     )

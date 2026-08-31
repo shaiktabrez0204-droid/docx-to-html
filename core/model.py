@@ -97,6 +97,9 @@ class Paragraph:
     # floating images can reference their nearest containing block. None until
     # the anchoring pass runs; never set by the OOXML parser.
     block_id: Optional[str] = None
+    # Section index this block belongs to (assigned by OOXML parser based on
+    # document order and sectPr breaks). Used for page/layout resolution.
+    section_index: int = 0
 
 
 @dataclass
@@ -154,6 +157,7 @@ class Table:
     style_name: Optional[str] = None     # w:tblStyle/@w:val
     block_id: Optional[str] = None       # assigned by anchoring-equivalent pass if needed
     borders: Optional[Dict[str, BorderEdge]] = None  # w:tblPr/w:tblBorders per-edge defaults
+    section_index: int = 0
 
     @property
     def column_count(self) -> int:
@@ -394,11 +398,14 @@ class PageLayout:
     margin_top_emu: int = 914400      # 1in
     margin_right_emu: int = 914400    # 1in
     margin_bottom_emu: int = 914400  # 1in
+    header_distance_emu: int = 708732  # 0.5in (default header distance from top)
+    footer_distance_emu: int = 708732  # 0.5in (default footer distance from bottom)
     cols_num: int = 1
     cols_space_emu: int = 0
     cols_equal_width: bool = True
     col_widths_emu: Optional[List[int]] = None
     col_spaces_emu: Optional[List[int]] = None
+    section_index: int = 0
 
     @property
     def page_width_px(self) -> int:
@@ -425,7 +432,16 @@ class PageLayout:
     def margin_top_px(self) -> int:
         return emu_to_px(self.margin_top_emu)
 
+    @property
+    def header_distance_px(self) -> int:
+        return emu_to_px(self.header_distance_emu)
+
+    @property
+    def footer_distance_px(self) -> int:
+        return emu_to_px(self.footer_distance_emu)
+
     def column_boxes_px(self):
+        """Return column geometry in px relative to content box origin (margin-left)."""
         usable_emu = self.width_emu - self.margin_left_emu - self.margin_right_emu
         if self.cols_num <= 1:
             return [{"left_emu": 0, "left_px": 0, "width_emu": usable_emu, "width_px": emu_to_px(usable_emu), "right_px": emu_to_px(usable_emu)}]
@@ -450,6 +466,106 @@ class PageLayout:
                 boxes.append({"left_emu": x, "left_px": left_px, "width_emu": col_w, "width_px": width_px, "right_px": left_px + width_px})
                 x += col_w + self.cols_space_emu
         return boxes
+
+    def column_boxes_page_px(self):
+        """Return column geometry in px relative to page origin (top-left of page)."""
+        boxes = self.column_boxes_px()
+        margin_left_px = self.margin_left_px
+        for box in boxes:
+            box["left_px"] += margin_left_px
+            box["right_px"] += margin_left_px
+        return boxes
+
+    def content_box_page_px(self):
+        """Return content box in page-relative px coordinates."""
+        return {
+            "left_px": self.margin_left_px,
+            "top_px": self.margin_top_px,
+            "width_px": self.content_width_px,
+            "height_px": self.content_height_px,
+            "right_px": self.margin_left_px + self.content_width_px,
+            "bottom_px": self.margin_top_px + self.content_height_px,
+        }
+
+    def header_box_page_px(self):
+        """Return header box in page-relative px coordinates."""
+        return {
+            "left_px": self.margin_left_px,
+            "top_px": 0,
+            "width_px": self.content_width_px,
+            "height_px": self.header_distance_px,
+            "right_px": self.margin_left_px + self.content_width_px,
+            "bottom_px": self.header_distance_px,
+        }
+
+    def footer_box_page_px(self):
+        """Return footer box in page-relative px coordinates."""
+        footer_top = self.page_height_px - self.footer_distance_px
+        return {
+            "left_px": self.margin_left_px,
+            "top_px": footer_top,
+            "width_px": self.content_width_px,
+            "height_px": self.footer_distance_px,
+            "right_px": self.margin_left_px + self.content_width_px,
+            "bottom_px": self.page_height_px,
+        }
+
+
+@dataclass
+class Page:
+    """A single rendered page within a section.
+
+    Contains the layout geometry and references to objects placed on this page.
+    """
+    page_index: int = 0
+    section_index: int = 0
+    page_layout: Optional["PageLayout"] = None
+
+    # Content origin in page coordinates (top-left of margin box)
+    content_origin_x_px: int = 0
+    content_origin_y_px: int = 0
+
+    # Header/footer references (by section variant type)
+    header_default: Optional["HeaderFooter"] = None
+    header_first: Optional["HeaderFooter"] = None
+    header_even: Optional["HeaderFooter"] = None
+    footer_default: Optional["HeaderFooter"] = None
+    footer_first: Optional["HeaderFooter"] = None
+    footer_even: Optional["HeaderFooter"] = None
+
+    # Page-local objects (blocks, images, tables) assigned to this page
+    blocks: List["Block"] = field(default_factory=list)
+    floating_images: List["Image"] = field(default_factory=list)
+
+    @property
+    def content_box_page_px(self):
+        if self.page_layout:
+            return self.page_layout.content_box_page_px()
+        return {"left_px": 0, "top_px": 0, "width_px": 0, "height_px": 0, "right_px": 0, "bottom_px": 0}
+
+    @property
+    def column_boxes_page_px(self):
+        if self.page_layout:
+            return self.page_layout.column_boxes_page_px()
+        return []
+
+    @property
+    def column_boxes_content_px(self):
+        if self.page_layout:
+            return self.page_layout.column_boxes_px()
+        return []
+
+    def get_column_box_page_px(self, column_index: int):
+        boxes = self.column_boxes_page_px
+        if 0 <= column_index < len(boxes):
+            return boxes[column_index]
+        return boxes[0] if boxes else None
+
+    def get_column_box_content_px(self, column_index: int):
+        boxes = self.column_boxes_content_px
+        if 0 <= column_index < len(boxes):
+            return boxes[column_index]
+        return boxes[0] if boxes else None
 
 
 @dataclass

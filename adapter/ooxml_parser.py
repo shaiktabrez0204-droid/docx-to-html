@@ -858,6 +858,8 @@ class OoxmlParser:
         mr = _twip(mar, w + "right")
         mt = _twip(mar, w + "top")
         mb = _twip(mar, w + "bottom")
+        hdr = _twip(mar, w + "header")
+        ftr = _twip(mar, w + "bottom")  # footer distance is separate attribute
         if ml:
             kwargs["margin_left_emu"] = ml
         if mr:
@@ -866,6 +868,10 @@ class OoxmlParser:
             kwargs["margin_top_emu"] = mt
         if mb:
             kwargs["margin_bottom_emu"] = mb
+        if hdr:
+            kwargs["header_distance_emu"] = hdr
+        if ftr:
+            kwargs["footer_distance_emu"] = ftr
         kwargs.update(self._parse_cols(sect))
         return PageLayout(**kwargs)
 
@@ -891,6 +897,8 @@ class OoxmlParser:
         mr = _twip(mar, w + "right")
         mt = _twip(mar, w + "top")
         mb = _twip(mar, w + "bottom")
+        hdr = _twip(mar, w + "header")
+        ftr = _twip(mar, w + "footer")
         if ml:
             kwargs["margin_left_emu"] = ml
         if mr:
@@ -899,6 +907,10 @@ class OoxmlParser:
             kwargs["margin_top_emu"] = mt
         if mb:
             kwargs["margin_bottom_emu"] = mb
+        if hdr:
+            kwargs["header_distance_emu"] = hdr
+        if ftr:
+            kwargs["footer_distance_emu"] = ftr
         kwargs.update(self._parse_cols(sect_elem))
         return PageLayout(**kwargs)
 
@@ -1099,6 +1111,7 @@ class OoxmlParser:
                         for c in para.content:
                             if isinstance(c, Image):
                                 c.section_index = sec_idx_val
+                        para.section_index = sec_idx_val
                         collected.append(para)
                 elif inner.tag == self._qn("tbl"):
                     tbl = self._parse_table(inner)
@@ -1108,6 +1121,7 @@ class OoxmlParser:
                                 for p in cell.content:
                                     for img in p.images:
                                         img.section_index = sec_idx_val
+                        tbl.section_index = sec_idx_val
                         collected.append(tbl)
                 elif inner.tag == self._qn("sdt"):
                     sdt_content = inner.find(self._qn("sdtContent"))
@@ -1129,6 +1143,7 @@ class OoxmlParser:
                     for c in para.content:
                         if isinstance(c, Image):
                             c.section_index = sec_idx
+                    para.section_index = sec_idx
                     blocks.append(para)
                 pPr = child.find(self._qn("pPr"))
                 if pPr is not None and pPr.find(self._qn("sectPr")) is not None:
@@ -1141,6 +1156,7 @@ class OoxmlParser:
                             for p in cell.content:
                                 for img in p.images:
                                     img.section_index = sec_idx
+                    tbl.section_index = sec_idx
                     blocks.append(tbl)
             elif child.tag == self._qn("sdt"):
                 sdt_content = child.find(self._qn("sdtContent"))
