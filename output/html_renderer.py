@@ -288,10 +288,38 @@ def render_image(img: Image, assets: Optional[dict] = None) -> str:
         attrs.append('width="%d"' % img.width)
     if img.height:
         attrs.append('height="%d"' % img.height)
+
+    # Build transform string for rotation, flip, and crop
+    transform_parts = []
+
+    # Rotation
     rot = getattr(img, "rotation", None)
     if rot is not None:
         deg = rot / 60000.0
-        attrs.append('style="transform: rotate(%gdeg)"' % deg)
+        transform_parts.append("rotate(%gdeg)" % deg)
+
+    # Flip
+    if getattr(img, "flip_h", False):
+        transform_parts.append("scaleX(-1)")
+    if getattr(img, "flip_v", False):
+        transform_parts.append("scaleY(-1)")
+
+    # Crop - use clip-path with inset()
+    crop_left = getattr(img, "crop_left", None)
+    crop_top = getattr(img, "crop_top", None)
+    crop_right = getattr(img, "crop_right", None)
+    crop_bottom = getattr(img, "crop_bottom", None)
+    if any(v is not None for v in (crop_left, crop_top, crop_right, crop_bottom)):
+        cl = (crop_left or 0) / 100000.0 * 100
+        ct = (crop_top or 0) / 100000.0 * 100
+        cr = (crop_right or 0) / 100000.0 * 100
+        cb = (crop_bottom or 0) / 100000.0 * 100
+        # clip-path is a separate CSS property, not a transform
+        attrs.append('style="transform: %s; clip-path: inset(%g%% %g%% %g%% %g%%)"' % (
+            " ".join(transform_parts), ct, cr, cb, cl))
+    elif transform_parts:
+        attrs.append('style="transform: %s"' % " ".join(transform_parts))
+
     attrs.append(alt_attr)
     attrs.append('class="docx-image"')
     return "<img %s>" % " ".join(attrs)
@@ -611,15 +639,37 @@ def _float_style(img: Image, page: PageLayout, container: str, is_hf: bool = Fal
         style["width"] = "%dpx" % img.width
     if img.height:
         style["height"] = "%dpx" % img.height
+
+    # Build transform parts: translate (from tx/ty), rotate, flip, crop
+    transform_parts = []
+    existing_transform = style.get("transform")
+    if existing_transform:
+        transform_parts.append(existing_transform)
+
     rot = getattr(img, "rotation", None)
     if rot is not None:
         deg = rot / 60000.0
-        existing = style.get("transform")
-        rot_str = "rotate(%gdeg)" % deg
-        if existing:
-            style["transform"] = existing + " " + rot_str
-        else:
-            style["transform"] = rot_str
+        transform_parts.append("rotate(%gdeg)" % deg)
+
+    if getattr(img, "flip_h", False):
+        transform_parts.append("scaleX(-1)")
+    if getattr(img, "flip_v", False):
+        transform_parts.append("scaleY(-1)")
+
+    # Crop - use clip-path with inset()
+    crop_left = getattr(img, "crop_left", None)
+    crop_top = getattr(img, "crop_top", None)
+    crop_right = getattr(img, "crop_right", None)
+    crop_bottom = getattr(img, "crop_bottom", None)
+    if any(v is not None for v in (crop_left, crop_top, crop_right, crop_bottom)):
+        cl = (crop_left or 0) / 100000.0 * 100
+        ct = (crop_top or 0) / 100000.0 * 100
+        cr = (crop_right or 0) / 100000.0 * 100
+        cb = (crop_bottom or 0) / 100000.0 * 100
+        style["clip-path"] = "inset(%g%% %g%% %g%% %g%%)" % (ct, cr, cb, cl)
+
+    if transform_parts:
+        style["transform"] = " ".join(transform_parts)
 
     return "; ".join("%s: %s" % (k, v) for k, v in style.items())
 

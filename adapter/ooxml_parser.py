@@ -384,7 +384,11 @@ class OoxmlParser:
             if cy and cy.lstrip("-").isdigit():
                 extent_cy = int(cy)
                 height = emu_to_px(extent_cy)
+
+        # Visual transforms from a:xfrm
         rotation = None
+        flip_h = False
+        flip_v = False
         xfrm = drawing_elem.find(".//" + self._qn_ns(NS_A, "xfrm"))
         if xfrm is not None:
             rot = xfrm.get("rot")
@@ -393,6 +397,50 @@ class OoxmlParser:
                     rotation = int(rot)
                 except ValueError:
                     pass
+            flip_h_val = xfrm.get("flipH")
+            if flip_h_val in ("1", "true", "True"):
+                flip_h = True
+            flip_v_val = xfrm.get("flipV")
+            if flip_v_val in ("1", "true", "True"):
+                flip_v = True
+
+        # Crop from a:srcRect (in blipFill, fraction of image in 1/100000 units)
+        crop_left = crop_top = crop_right = crop_bottom = None
+        blip_fill = drawing_elem.find(".//" + self._qn_ns(NS_PIC, "blipFill"))
+        if blip_fill is None:
+            blip_fill = drawing_elem.find(".//" + self._qn_ns(NS_A, "blipFill"))
+        if blip_fill is not None:
+            src_rect = blip_fill.find(self._qn_ns(NS_A, "srcRect"))
+            if src_rect is not None:
+                for attr, field in (("l", "crop_left"), ("t", "crop_top"),
+                                    ("r", "crop_right"), ("b", "crop_bottom")):
+                    val = src_rect.get(attr)
+                    if val and val.lstrip("-").isdigit():
+                        if field == "crop_left":
+                            crop_left = int(val)
+                        elif field == "crop_top":
+                            crop_top = int(val)
+                        elif field == "crop_right":
+                            crop_right = int(val)
+                        elif field == "crop_bottom":
+                            crop_bottom = int(val)
+
+        # Effect extent from wp:effectExtent (EMU)
+        effect_extent_l = effect_extent_t = effect_extent_r = effect_extent_b = None
+        effect_extent = drawing_elem.find(self._qn_ns(NS_WP, "effectExtent"))
+        if effect_extent is not None:
+            for attr, field in (("l", "effect_extent_l"), ("t", "effect_extent_t"),
+                                ("r", "effect_extent_r"), ("b", "effect_extent_b")):
+                val = effect_extent.get(attr)
+                if val and val.lstrip("-").isdigit():
+                    if field == "effect_extent_l":
+                        effect_extent_l = int(val)
+                    elif field == "effect_extent_t":
+                        effect_extent_t = int(val)
+                    elif field == "effect_extent_r":
+                        effect_extent_r = int(val)
+                    elif field == "effect_extent_b":
+                        effect_extent_b = int(val)
 
         # Alt text: Word's "Alt Text" description is stored in wp:docPr/@descr.
         # wp:docPr/@name is the shape name (e.g. "Picture 1"), not a description,
@@ -437,6 +485,16 @@ class OoxmlParser:
             rotation=rotation,
             extent_cx=extent_cx,
             extent_cy=extent_cy,
+            crop_left=crop_left,
+            crop_top=crop_top,
+            crop_right=crop_right,
+            crop_bottom=crop_bottom,
+            flip_h=flip_h,
+            flip_v=flip_v,
+            effect_extent_l=effect_extent_l,
+            effect_extent_t=effect_extent_t,
+            effect_extent_r=effect_extent_r,
+            effect_extent_b=effect_extent_b,
             **anchor_fields,
         )
 
@@ -672,6 +730,35 @@ class OoxmlParser:
                     break
             if not alt_text:
                 alt_text = imagedata.get(self._qn_ns(NS_O, "title")) or imagedata.get("title")
+
+            # VML rotation from style (e.g., "rotation:90") or o:rotation attribute
+            rotation = None
+            for shape in r_elem.findall(".//" + self._qn_ns(NS_V, "shape")):
+                if imagedata in list(shape.iter()):
+                    # Check style for rotation
+                    style = shape.get("style", "")
+                    rot_m = re.search(r"rotation\s*:\s*([0-9.-]+)", style, re.I)
+                    if rot_m:
+                        try:
+                            # VML rotation is in degrees; convert to 1/60000 deg
+                            rotation = int(round(float(rot_m.group(1)) * 60000))
+                        except Exception:
+                            pass
+                    # Check o:rotation attribute
+                    if rotation is None:
+                        o_rot = shape.get(self._qn_ns(NS_O, "rotation"))
+                        if o_rot:
+                            try:
+                                rotation = int(round(float(o_rot) * 60000))
+                            except Exception:
+                                pass
+                    # Check for flip in style
+                    flip_h = "flipH" in style or "flip-h" in style or "flipx" in style
+                    flip_v = "flipV" in style or "flip-v" in style or "flipy" in style
+                    break
+            else:
+                flip_h = flip_v = False
+
             self._image_seq += 1
             images.append(Image(
                 image_id="img%d" % self._image_seq,
@@ -682,6 +769,9 @@ class OoxmlParser:
                 height=height,
                 alt_text=alt_text,
                 wrap_type="inline",
+                rotation=rotation,
+                flip_h=flip_h,
+                flip_v=flip_v,
             ))
         return images
 

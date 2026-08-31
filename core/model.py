@@ -353,6 +353,22 @@ class Image:
     extent_cx: Optional[int] = None  # raw wp:extent cx in EMU
     extent_cy: Optional[int] = None  # raw wp:extent cy in EMU
 
+    # ---- Visual transforms (DrawingML) ----
+    # Crop rectangle from a:srcRect (fraction of image in 1/100000 units).
+    # l, t, r, b represent left, top, right, bottom crop offsets.
+    crop_left: Optional[int] = None
+    crop_top: Optional[int] = None
+    crop_right: Optional[int] = None
+    crop_bottom: Optional[int] = None
+    # Flip flags from a:xfrm/@flipH, @flipV
+    flip_h: bool = False
+    flip_v: bool = False
+    # Effect extent from wp:effectExtent (EMU) - visual effect bounds
+    effect_extent_l: Optional[int] = None
+    effect_extent_t: Optional[int] = None
+    effect_extent_r: Optional[int] = None
+    effect_extent_b: Optional[int] = None
+
     def __getitem__(self, key: str) -> Any:
         """Allow dict-like access to Image attributes for backward compatibility."""
         return getattr(self, key)
