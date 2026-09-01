@@ -985,6 +985,29 @@ class OoxmlParser:
                         sect_elements.append(sect)
             elif child.tag == w + "sectPr":
                 sect_elements.append(child)
+            elif child.tag == w + "sdt":
+                sdt_content = child.find(w + "sdtContent")
+                if sdt_content is not None:
+                    # SectPr can be inside w:sdt/w:sdtContent (and nested sdt).
+                    # This mirrors parse_document()'s section_index handling
+                    # which looks for w:p/w:pPr/w:sectPr inside sdtContent
+                    # via iter(). Collect in document order for consistency.
+                    for elem in sdt_content.iter():
+                        if elem.tag == w + "p":
+                            pPr = elem.find(w + "pPr")
+                            if pPr is not None:
+                                sect = pPr.find(w + "sectPr")
+                                if sect is not None:
+                                    sect_elements.append(sect)
+            else:
+                if child.tag.endswith("}customXml") or child.tag.endswith("}smartTag"):
+                    for elem in child.iter():
+                        if elem.tag == w + "p":
+                            pPr = elem.find(w + "pPr")
+                            if pPr is not None:
+                                sect = pPr.find(w + "sectPr")
+                                if sect is not None:
+                                    sect_elements.append(sect)
         if not sect_elements:
             sect = body.find(w + "sectPr")
             if sect is not None:
@@ -1101,16 +1124,20 @@ class OoxmlParser:
 
         def _collect_from_container(container_elem: ET.Element, sec_idx_val: int):
             collected: List = []
+            cur = sec_idx_val
             for inner in container_elem:
                 if inner.tag == self._qn("p"):
                     for para in self._parse_paragraph_blocks(inner):
                         for img in para.images:
-                            img.section_index = sec_idx_val
+                            img.section_index = cur
                         for c in para.content:
                             if isinstance(c, Image):
-                                c.section_index = sec_idx_val
-                        para.section_index = sec_idx_val
+                                c.section_index = cur
+                        para.section_index = cur
                         collected.append(para)
+                    pPr = inner.find(self._qn("pPr"))
+                    if pPr is not None and pPr.find(self._qn("sectPr")) is not None:
+                        cur += 1
                 elif inner.tag == self._qn("tbl"):
                     tbl = self._parse_table(inner)
                     if tbl is not None:
@@ -1118,19 +1145,19 @@ class OoxmlParser:
                             for cell in row.cells:
                                 for p in cell.content:
                                     for img in p.images:
-                                        img.section_index = sec_idx_val
-                        tbl.section_index = sec_idx_val
+                                        img.section_index = cur
+                        tbl.section_index = cur
                         collected.append(tbl)
                 elif inner.tag == self._qn("sdt"):
                     sdt_content = inner.find(self._qn("sdtContent"))
                     if sdt_content is not None:
-                        nested = _collect_from_container(sdt_content, sec_idx_val)
+                        nested, cur = _collect_from_container(sdt_content, cur)
                         collected.extend(nested)
                 elif inner.tag == self._qn("sectPr"):
                     continue
                 else:
                     continue
-            return collected
+            return collected, cur
 
         for child in body:
             if child.tag == self._qn("p"):
@@ -1158,14 +1185,8 @@ class OoxmlParser:
             elif child.tag == self._qn("sdt"):
                 sdt_content = child.find(self._qn("sdtContent"))
                 if sdt_content is not None:
-                    inner_blocks = _collect_from_container(sdt_content, sec_idx)
+                    inner_blocks, sec_idx = _collect_from_container(sdt_content, sec_idx)
                     blocks.extend(inner_blocks)
-                    for inner_elem in sdt_content.iter():
-                        if inner_elem.tag == self._qn("p"):
-                            pPr2 = inner_elem.find(self._qn("pPr"))
-                            if pPr2 is not None and pPr2.find(self._qn("sectPr")) is not None:
-                                sec_idx += 1
-                                break
             elif child.tag == self._qn("sectPr"):
                 continue
             else:
