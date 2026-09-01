@@ -18,7 +18,7 @@ from semantic.numbering import (
 )
 from core.model import Paragraph, Table, Section, HeaderFooter, Run, Note
 from core.anchoring import associate_floating_images
-from core.layout import build_pages_from_sections, resolve_layout_state, LayoutState
+from core.layout import build_pages_from_sections, resolve_layout_state, LayoutState, resolve_image_coordinates
 from output.html_renderer import render_html
 
 def _apply_para_style(para: Paragraph, rs: ResolvedStyle) -> None:
@@ -251,34 +251,10 @@ def convert_docx(docx_path: str, title: str = "Converted Document") -> Conversio
     endnotes = parser.get_endnotes()
     comments = parser.get_comments()
 
-    # Build pages from sections (first-class layout state)
     pages = build_pages_from_sections(sections)
-
-    # Assign floating images to their pages for layout resolution
     for page in pages:
         page.floating_images = []
-    for b in blocks:
-        if isinstance(b, Paragraph):
-            for img in b.images:
-                if img.wrap_type == "anchor":
-                    sec_idx = getattr(img, "section_index", 0)
-                    for page in pages:
-                        if page.section_index == sec_idx:
-                            page.floating_images.append(img)
-                            break
-        elif isinstance(b, Table):
-            for row in b.rows:
-                for cell in row.cells:
-                    for p in cell.content:
-                        for img in p.images:
-                            if img.wrap_type == "anchor":
-                                sec_idx = getattr(img, "section_index", 0)
-                                for page in pages:
-                                    if page.section_index == sec_idx:
-                                        page.floating_images.append(img)
-                                        break
-
-    # Also assign header/footer floating images
+    layout_state = resolve_layout_state(blocks, sections, pages)
     for page in pages:
         for hf in [page.header_default, page.header_first, page.header_even,
                    page.footer_default, page.footer_first, page.footer_even]:
@@ -286,18 +262,19 @@ def convert_docx(docx_path: str, title: str = "Converted Document") -> Conversio
                 for blk in hf.blocks:
                     if isinstance(blk, Paragraph):
                         for img in blk.images:
-                            if img.wrap_type == "anchor":
+                            if img.wrap_type == "anchor" and img not in page.floating_images:
                                 page.floating_images.append(img)
                     elif isinstance(blk, Table):
                         for row in blk.rows:
                             for cell in row.cells:
                                 for p in cell.content:
                                     for img in p.images:
-                                        if img.wrap_type == "anchor":
+                                        if img.wrap_type == "anchor" and img not in page.floating_images:
                                             page.floating_images.append(img)
-
-    # Resolve complete layout state (coordinates, page ownership)
-    layout_state = resolve_layout_state(blocks, sections, pages)
+    for page in pages:
+        for img in page.floating_images:
+            coord = resolve_image_coordinates(img, pages, sections, layout_state.block_page_ownership)
+            layout_state.image_coordinates[img.image_id] = coord
 
     # Rudimentary column index assignment for column-relative images
     def _assign_column_indices():

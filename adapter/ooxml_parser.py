@@ -939,8 +939,7 @@ class OoxmlParser:
             blocks = []
             for child in root:
                 if child.tag == self._qn("p"):
-                    para = self._parse_paragraph(child)
-                    if para is not None:
+                    for para in self._parse_paragraph_blocks(child):
                         blocks.append(para)
                 elif child.tag == self._qn("tbl"):
                     tbl = self._parse_table(child)
@@ -1104,8 +1103,7 @@ class OoxmlParser:
             collected: List = []
             for inner in container_elem:
                 if inner.tag == self._qn("p"):
-                    para = self._parse_paragraph(inner)
-                    if para is not None:
+                    for para in self._parse_paragraph_blocks(inner):
                         for img in para.images:
                             img.section_index = sec_idx_val
                         for c in para.content:
@@ -1136,8 +1134,7 @@ class OoxmlParser:
 
         for child in body:
             if child.tag == self._qn("p"):
-                para = self._parse_paragraph(child)
-                if para is not None:
+                for para in self._parse_paragraph_blocks(child):
                     for img in para.images:
                         img.section_index = sec_idx
                     for c in para.content:
@@ -1500,8 +1497,7 @@ class OoxmlParser:
                 blocks: List = []
                 for child in elem:
                     if child.tag == self._qn("p"):
-                        para = self._parse_paragraph(child)
-                        if para is not None:
+                        for para in self._parse_paragraph_blocks(child):
                             blocks.append(para)
                     elif child.tag == self._qn("tbl"):
                         tbl = self._parse_table(child)
@@ -1512,8 +1508,7 @@ class OoxmlParser:
                         if sdt_c is not None:
                             for inner in sdt_c:
                                 if inner.tag == self._qn("p"):
-                                    para = self._parse_paragraph(inner)
-                                    if para is not None:
+                                    for para in self._parse_paragraph_blocks(inner):
                                         blocks.append(para)
                                 elif inner.tag == self._qn("tbl"):
                                     tbl = self._parse_table(inner)
@@ -1730,8 +1725,7 @@ class OoxmlParser:
             out: List[Paragraph] = []
             for elem in container:
                 if elem.tag == self._qn("p"):
-                    para = self._parse_paragraph(elem)
-                    if para is not None:
+                    for para in self._parse_paragraph_blocks(elem):
                         out.append(para)
                 elif elem.tag == self._qn("sdt"):
                     sdt_c = elem.find(self._qn("sdtContent"))
@@ -1800,7 +1794,13 @@ class OoxmlParser:
 
     # ---- private parsing ----
 
-    def _parse_paragraph(self, p_elem: ET.Element) -> Paragraph:
+    def _parse_paragraph_blocks(self, p_elem: ET.Element) -> List[Paragraph]:
+        """Parse a w:p into one or more Paragraph blocks, splitting at w:br type=page.
+
+        Preserves exact run order/formatting/tabs/symbols/images and other inline
+        content. Multiple page breaks produce multiple blocks, each after the first
+        gets page_break_before=True so pagination puts it on next physical page.
+        """
         style_name = "Normal"
         alignment = "left"
         outline_level = None
@@ -1814,10 +1814,12 @@ class OoxmlParser:
         spacing_after = None
         line_spacing = None
         line_spacing_rule = None
-
+        page_break_before = False
         ppr = p_elem.find(self._qn("pPr"))
         tabs: List[TabStop] = []
         if ppr is not None:
+            if ppr.find(self._qn("pageBreakBefore")) is not None:
+                page_break_before = True
             pstyle = ppr.find(self._qn("pStyle"))
             if pstyle is not None:
                 style_name = pstyle.get(self._qn("val"), "Normal")
@@ -1875,19 +1877,29 @@ class OoxmlParser:
                     leader = tab_el.get(self._qn("leader"))
                     if val and pos and pos.lstrip("-").isdigit():
                         tabs.append(TabStop(val=val, pos=int(pos), leader=leader))
-
-        runs: List[Run] = []
-        content = []  # ordered Run/Image mix, preserving in-paragraph position
-        field_stack = []  # stack of {code:str, type:Optional[str], has_separate:bool}
+        # segmented accumulation
+        segments: List[Tuple[List[Run], List]] = []
+        cur_runs: List[Run] = []
+        cur_content: List = []
+        field_stack = []
         def _in_supported_result():
             return bool(field_stack and field_stack[-1].get("type") in ("PAGE", "NUMPAGES", "PAGEREF") and field_stack[-1].get("has_separate"))
         def _emit_field_placeholder(field_type, field_code):
             ph = Run(text="", field_type=field_type, field_code=field_code)
-            runs.append(ph)
-            content.append(ph)
-        # Walk direct children so a run's position relative to a drawing (and to
-        # other runs) is preserved. w:hyperlink contains nested runs and is
-        # handled recursively so its runs keep their order too.
+            cur_runs.append(ph)
+            cur_content.append(ph)
+        def _has_meaningful_cur():
+            if cur_runs or any(isinstance(c, Image) for c in cur_content) or any(isinstance(c, (NoteReference, CommentRangeStart, CommentRangeEnd)) for c in cur_content):
+                return True
+            return False
+        had_page_break = False
+        def _flush_segment():
+            if cur_runs or cur_content:
+                segments.append((list(cur_runs), list(cur_content)))
+                cur_runs.clear()
+                cur_content.clear()
+            elif segments:
+                pass
         for child in p_elem:
             if child.tag == self._qn("fldSimple"):
                 instr = child.get(self._qn("instr"), "") or ""
@@ -1899,15 +1911,14 @@ class OoxmlParser:
                     for r_elem in child.findall(self._qn("r")):
                         run = self._parse_run(r_elem)
                         if run is not None and self._run_is_meaningful(run):
-                            runs.append(run)
-                            content.append(run)
+                            cur_runs.append(run)
+                            cur_content.append(run)
                         for img in self._extract_images_from_r(r_elem):
-                            content.append(img)
+                            cur_content.append(img)
                     continue
             if child.tag == self._qn("r"):
                 fld_char_el = child.find(self._qn("fldChar"))
                 instr_el = child.find(self._qn("instrText"))
-                # tab/br are direct children of w:r
                 has_tab = child.find(self._qn("tab")) is not None
                 has_br = child.find(self._qn("br")) is not None
                 if fld_char_el is not None:
@@ -1938,57 +1949,55 @@ class OoxmlParser:
                         field_stack[-1]["code"] += txt + " "
                     continue
                 if _in_supported_result():
-                    # field result runs like <w:t>xi</w:t> are suppressed; placeholder will be emitted at end
                     continue
                 fn_ref_el = child.find(self._qn("footnoteReference"))
                 if fn_ref_el is not None:
                     fid = fn_ref_el.get(self._qn("id"))
                     if fid is not None:
-                        content.append(NoteReference(note_type="footnote", note_id=str(fid)))
+                        cur_content.append(NoteReference(note_type="footnote", note_id=str(fid)))
                         for img in self._extract_images_from_r(child):
-                            content.append(img)
+                            cur_content.append(img)
                         continue
                 en_ref_el = child.find(self._qn("endnoteReference"))
                 if en_ref_el is not None:
                     eid = en_ref_el.get(self._qn("id"))
                     if eid is not None:
-                        content.append(NoteReference(note_type="endnote", note_id=str(eid)))
+                        cur_content.append(NoteReference(note_type="endnote", note_id=str(eid)))
                         for img in self._extract_images_from_r(child):
-                            content.append(img)
+                            cur_content.append(img)
                         continue
                 cmt_ref_el = child.find(self._qn("commentReference"))
                 if cmt_ref_el is not None:
                     cid = cmt_ref_el.get(self._qn("id"))
                     if cid is not None:
-                        content.append(NoteReference(note_type="comment", note_id=str(cid)))
+                        cur_content.append(NoteReference(note_type="comment", note_id=str(cid)))
                         for img in self._extract_images_from_r(child):
-                            content.append(img)
+                            cur_content.append(img)
                         continue
                 crs = child.find(self._qn("commentRangeStart"))
                 if crs is not None:
                     cid = crs.get(self._qn("id"))
                     if cid is not None:
-                        content.append(CommentRangeStart(comment_id=str(cid)))
+                        cur_content.append(CommentRangeStart(comment_id=str(cid)))
                     for img in self._extract_images_from_r(child):
-                        content.append(img)
+                        cur_content.append(img)
                     continue
                 cre = child.find(self._qn("commentRangeEnd"))
                 if cre is not None:
                     cid = cre.get(self._qn("id"))
                     if cid is not None:
-                        content.append(CommentRangeEnd(comment_id=str(cid)))
+                        cur_content.append(CommentRangeEnd(comment_id=str(cid)))
                     for img in self._extract_images_from_r(child):
-                        content.append(img)
+                        cur_content.append(img)
                     continue
                 if child.find(self._qn("footnoteRef")) is not None or child.find(self._qn("endnoteRef")) is not None:
                     for img in self._extract_images_from_r(child):
-                        content.append(img)
+                        cur_content.append(img)
                     continue
                 if child.find(self._qn("commentRef")) is not None:
                     for img in self._extract_images_from_r(child):
-                        content.append(img)
+                        cur_content.append(img)
                     continue
-                # w:sym, w:noBreakHyphen, w:softHyphen are direct children of w:r (no w:t)
                 sym_elem = child.find(self._qn("sym"))
                 if sym_elem is not None:
                     font = sym_elem.get(self._qn("font"))
@@ -2007,7 +2016,6 @@ class OoxmlParser:
                                     ff_tmp = rf_tmp.get(self._qn("eastAsia")) or rf_tmp.get(self._qn("cs"))
                                 if ff_tmp:
                                     sym_run.font_family = ff_tmp
-                        # inherit other formatting via _parse_run then override text
                         base = self._parse_run(child)
                         if base.font_family and not sym_run.font_family:
                             sym_run.font_family = base.font_family
@@ -2020,10 +2028,10 @@ class OoxmlParser:
                         if base.font_color is not None:
                             sym_run.font_color = base.font_color
                         if self._run_is_meaningful(sym_run):
-                            runs.append(sym_run)
-                            content.append(sym_run)
+                            cur_runs.append(sym_run)
+                            cur_content.append(sym_run)
                         for img in self._extract_images_from_r(child):
-                            content.append(img)
+                            cur_content.append(img)
                         continue
                 if child.find(self._qn("noBreakHyphen")) is not None:
                     nbh_run = Run(text="\u2011")
@@ -2036,10 +2044,10 @@ class OoxmlParser:
                         nbh_run.italic = base.italic
                     if base.font_size is not None:
                         nbh_run.font_size = base.font_size
-                    runs.append(nbh_run)
-                    content.append(nbh_run)
+                    cur_runs.append(nbh_run)
+                    cur_content.append(nbh_run)
                     for img in self._extract_images_from_r(child):
-                        content.append(img)
+                        cur_content.append(img)
                     continue
                 if child.find(self._qn("softHyphen")) is not None:
                     sh_run = Run(text="\u00AD")
@@ -2052,31 +2060,40 @@ class OoxmlParser:
                         sh_run.italic = base.italic
                     if base.font_size is not None:
                         sh_run.font_size = base.font_size
-                    runs.append(sh_run)
-                    content.append(sh_run)
+                    cur_runs.append(sh_run)
+                    cur_content.append(sh_run)
                     for img in self._extract_images_from_r(child):
-                        content.append(img)
+                        cur_content.append(img)
                     continue
                 if has_tab:
                     tab_run = Run(text="\t")
-                    runs.append(tab_run)
-                    content.append(tab_run)
+                    cur_runs.append(tab_run)
+                    cur_content.append(tab_run)
                     for img in self._extract_images_from_r(child):
-                        content.append(img)
+                        cur_content.append(img)
                     continue
                 if has_br:
-                    br_run = Run(text="\n")
-                    runs.append(br_run)
-                    content.append(br_run)
+                    br_el = child.find(self._qn("br"))
+                    br_type = br_el.get(self._qn("type")) if br_el is not None else None
+                    if br_type == "page":
+                        had_page_break = True
+                        _flush_segment()
+                        for img in self._extract_images_from_r(child):
+                            cur_content.append(img)
+                        continue
+                    else:
+                        br_run = Run(text="\n")
+                        cur_runs.append(br_run)
+                        cur_content.append(br_run)
                     for img in self._extract_images_from_r(child):
-                        content.append(img)
+                        cur_content.append(img)
                     continue
                 run = self._parse_run(child)
                 if run is not None and self._run_is_meaningful(run):
-                    runs.append(run)
-                    content.append(run)
+                    cur_runs.append(run)
+                    cur_content.append(run)
                 for img in self._extract_images_from_r(child):
-                    content.append(img)
+                    cur_content.append(img)
             elif child.tag == self._qn("hyperlink"):
                 href = None
                 anchor = child.get(self._qn("anchor"))
@@ -2089,116 +2106,131 @@ class OoxmlParser:
                         if rel is not None:
                             href = rel.get("Target")
                 for r_elem in child.iter(self._qn("r")):
-                    # Handle note references inside hyperlink (rare)
+                    br_el = r_elem.find(self._qn("br"))
+                    if br_el is not None and br_el.get(self._qn("type")) == "page":
+                        had_page_break = True
+                        _flush_segment()
+                        for img in self._extract_images_from_r(r_elem):
+                            cur_content.append(img)
+                        continue
                     fn_h = r_elem.find(self._qn("footnoteReference"))
                     if fn_h is not None:
                         fid = fn_h.get(self._qn("id"))
                         if fid is not None:
-                            content.append(NoteReference(note_type="footnote", note_id=str(fid)))
+                            cur_content.append(NoteReference(note_type="footnote", note_id=str(fid)))
                             for img in self._extract_images_from_r(r_elem):
-                                content.append(img)
+                                cur_content.append(img)
                             continue
                     en_h = r_elem.find(self._qn("endnoteReference"))
                     if en_h is not None:
                         eid = en_h.get(self._qn("id"))
                         if eid is not None:
-                            content.append(NoteReference(note_type="endnote", note_id=str(eid)))
+                            cur_content.append(NoteReference(note_type="endnote", note_id=str(eid)))
                             for img in self._extract_images_from_r(r_elem):
-                                content.append(img)
+                                cur_content.append(img)
                             continue
                     cmt_h = r_elem.find(self._qn("commentReference"))
                     if cmt_h is not None:
                         cid = cmt_h.get(self._qn("id"))
                         if cid is not None:
-                            content.append(NoteReference(note_type="comment", note_id=str(cid)))
+                            cur_content.append(NoteReference(note_type="comment", note_id=str(cid)))
                             for img in self._extract_images_from_r(r_elem):
-                                content.append(img)
+                                cur_content.append(img)
                             continue
                     crs_h = r_elem.find(self._qn("commentRangeStart"))
                     if crs_h is not None:
                         cid = crs_h.get(self._qn("id"))
                         if cid is not None:
-                            content.append(CommentRangeStart(comment_id=str(cid)))
+                            cur_content.append(CommentRangeStart(comment_id=str(cid)))
                         for img in self._extract_images_from_r(r_elem):
-                            content.append(img)
+                            cur_content.append(img)
                         continue
                     cre_h = r_elem.find(self._qn("commentRangeEnd"))
                     if cre_h is not None:
                         cid = cre_h.get(self._qn("id"))
                         if cid is not None:
-                            content.append(CommentRangeEnd(comment_id=str(cid)))
+                            cur_content.append(CommentRangeEnd(comment_id=str(cid)))
                         for img in self._extract_images_from_r(r_elem):
-                            content.append(img)
+                            cur_content.append(img)
                         continue
                     if r_elem.find(self._qn("footnoteRef")) is not None or r_elem.find(self._qn("endnoteRef")) is not None:
                         for img in self._extract_images_from_r(r_elem):
-                            content.append(img)
+                            cur_content.append(img)
                         continue
                     if r_elem.find(self._qn("commentRef")) is not None:
                         for img in self._extract_images_from_r(r_elem):
-                            content.append(img)
+                            cur_content.append(img)
                         continue
-                    # hyperlink runs do not participate in field state (PAGE never inside hyperlink in practice)
                     run = self._parse_run(r_elem)
                     if run is not None and self._run_is_meaningful(run):
                         if href is not None:
                             run.href = href
-                        runs.append(run)
-                        content.append(run)
+                        cur_runs.append(run)
+                        cur_content.append(run)
                     for img in self._extract_images_from_r(r_elem):
-                        content.append(img)
+                        cur_content.append(img)
             elif child.tag == self._qn("footnoteReference"):
                 fid = child.get(self._qn("id"))
                 if fid is not None:
-                    content.append(NoteReference(note_type="footnote", note_id=str(fid)))
+                    cur_content.append(NoteReference(note_type="footnote", note_id=str(fid)))
                 continue
             elif child.tag == self._qn("endnoteReference"):
                 eid = child.get(self._qn("id"))
                 if eid is not None:
-                    content.append(NoteReference(note_type="endnote", note_id=str(eid)))
+                    cur_content.append(NoteReference(note_type="endnote", note_id=str(eid)))
                 continue
             elif child.tag == self._qn("commentReference"):
                 cid = child.get(self._qn("id"))
                 if cid is not None:
-                    content.append(NoteReference(note_type="comment", note_id=str(cid)))
+                    cur_content.append(NoteReference(note_type="comment", note_id=str(cid)))
                 continue
             elif child.tag == self._qn("commentRangeStart"):
                 cid = child.get(self._qn("id"))
                 if cid is not None:
-                    content.append(CommentRangeStart(comment_id=str(cid)))
+                    cur_content.append(CommentRangeStart(comment_id=str(cid)))
                 continue
             elif child.tag == self._qn("commentRangeEnd"):
                 cid = child.get(self._qn("id"))
                 if cid is not None:
-                    content.append(CommentRangeEnd(comment_id=str(cid)))
+                    cur_content.append(CommentRangeEnd(comment_id=str(cid)))
                 continue
-
-        images = [c for c in content if isinstance(c, Image)]
-        has_ranges = any(isinstance(c, (CommentRangeStart, CommentRangeEnd)) for c in content)
-        has_notes = any(isinstance(c, NoteReference) for c in content)
-
+        if cur_runs or cur_content:
+            segments.append((list(cur_runs), list(cur_content)))
         has_layout = any(v is not None for v in [indent_left, indent_right, indent_first_line, indent_hanging, spacing_before, spacing_after, line_spacing]) or bool(tabs)
-        if runs or images or has_notes or has_ranges or style_name != "Normal" or has_layout or alignment != "left":
-            return Paragraph(
-                runs=runs,
-                style_name=style_name,
-                alignment=alignment,
-                outline_level=outline_level,
-                num_id=num_id,
-                num_ilvl=num_ilvl,
-                images=images,
-                content=content,
-                indent_left=indent_left,
-                indent_right=indent_right,
-                indent_first_line=indent_first_line,
-                indent_hanging=indent_hanging,
-                spacing_before=spacing_before,
-                spacing_after=spacing_after,
-                line_spacing=line_spacing,
-                line_spacing_rule=line_spacing_rule,
-                tabs=tabs,
-            )
-        return None
+        if not segments:
+            if style_name != "Normal" or has_layout or alignment != "left" or page_break_before:
+                para = Paragraph(runs=[], style_name=style_name, alignment=alignment, outline_level=outline_level, num_id=num_id, num_ilvl=num_ilvl, images=[], content=[], indent_left=indent_left, indent_right=indent_right, indent_first_line=indent_first_line, indent_hanging=indent_hanging, spacing_before=spacing_before, spacing_after=spacing_after, line_spacing=line_spacing, line_spacing_rule=line_spacing_rule, tabs=tabs)
+                para.page_break_before = page_break_before
+                para.contains_page_break = True
+                return [para]
+            return []
+        out: List[Paragraph] = []
+        for idx, (runs, content) in enumerate(segments):
+            images = [c for c in content if isinstance(c, Image)]
+            # skip truly empty segment that would duplicate page boundary without content (unless first and has layout)
+            if not runs and not images and not any(isinstance(c, (NoteReference, CommentRangeStart, CommentRangeEnd)) for c in content):
+                if idx == 0 and (style_name != "Normal" or has_layout or alignment != "left" or page_break_before):
+                    pass
+                else:
+                    continue
+            has_notes = any(isinstance(c, NoteReference) for c in content)
+            has_ranges = any(isinstance(c, (CommentRangeStart, CommentRangeEnd)) for c in content)
+            # keep empty paragraph if it carries semantic layout
+            if not runs and not images and not has_notes and not has_ranges and style_name == "Normal" and not has_layout and alignment == "left" and not page_break_before:
+                continue
+            para = Paragraph(runs=runs, style_name=style_name, alignment=alignment, outline_level=outline_level, num_id=num_id, num_ilvl=num_ilvl, images=images, content=content, indent_left=indent_left, indent_right=indent_right, indent_first_line=indent_first_line, indent_hanging=indent_hanging, spacing_before=spacing_before, spacing_after=spacing_after, line_spacing=line_spacing, line_spacing_rule=line_spacing_rule, tabs=tabs)
+            para.page_break_before = page_break_before if idx == 0 else True
+            para.contains_page_break = False
+            out.append(para)
+        if had_page_break and not (cur_runs or cur_content) and out:
+            out[-1].contains_page_break = True
+        return out
+
+    def _parse_paragraph(self, p_elem: ET.Element) -> Paragraph:
+        blocks=self._parse_paragraph_blocks(p_elem)
+        if not blocks:
+            return None
+        return blocks[0]
 
     @staticmethod
     def _run_is_meaningful(run: Run) -> bool:

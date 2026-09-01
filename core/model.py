@@ -100,6 +100,14 @@ class Paragraph:
     # Section index this block belongs to (assigned by OOXML parser based on
     # document order and sectPr breaks). Used for page/layout resolution.
     section_index: int = 0
+    # Pagination: explicit page break before this block (w:pageBreakBefore or
+    # preceding w:br w:type="page"). Consumed by core.layout to force a new
+    # physical page. Defaults False so existing callers/tests are unaffected.
+    page_break_before: bool = False
+    # True when this paragraph contains a hard page break (w:br w:type="page")
+    # inside its runs. The break is AFTER this paragraph's content for
+    # pagination purposes (next block starts on new page).
+    contains_page_break: bool = False
 
 
 @dataclass
