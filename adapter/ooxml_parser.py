@@ -964,6 +964,52 @@ class OoxmlParser:
             pass
         return HeaderFooter(hf_type=hf_type, kind=kind, blocks=blocks, r_id=r_id, target=part_path)
 
+    def _iter_document_flow(self, body: ET.Element):
+        """Single source of truth for document-order block flow.
+
+        Yields w:p, w:tbl and direct w:sectPr elements in exact document
+        order, descending into supported wrappers that can contain block-level
+        content. Supported wrappers: w:sdt/w:sdtContent, w:customXml,
+        w:smartTag (recursively, including nested sdt inside them). Both
+        get_sections() and parse_document() must use this traversal so
+        section boundaries and block section_index assignments stay in sync.
+        """
+        w = self._w
+
+        def walk(container: ET.Element):
+            for child in container:
+                if child.tag == w + "p":
+                    yield child
+                elif child.tag == w + "tbl":
+                    yield child
+                elif child.tag == w + "sdt":
+                    sdt_content = child.find(w + "sdtContent")
+                    if sdt_content is not None:
+                        yield from walk(sdt_content)
+                elif child.tag.endswith("}customXml") or child.tag.endswith("}smartTag"):
+                    yield from walk(child)
+                elif child.tag == w + "sectPr":
+                    yield child
+                else:
+                    continue
+
+        yield from walk(body)
+
+    def _section_sectPr_elements_in_order(self, body: ET.Element) -> List[ET.Element]:
+        """Collect w:sectPr elements in document order using the shared flow."""
+        w = self._w
+        sect_elements: List[ET.Element] = []
+        for elem in self._iter_document_flow(body):
+            if elem.tag == w + "p":
+                pPr = elem.find(w + "pPr")
+                if pPr is not None:
+                    sect = pPr.find(w + "sectPr")
+                    if sect is not None:
+                        sect_elements.append(sect)
+            elif elem.tag == w + "sectPr":
+                sect_elements.append(elem)
+        return sect_elements
+
     def get_sections(self) -> List[Section]:
         if not self._document_xml:
             return [Section(index=0, page_layout=self._page_layout)]
@@ -975,39 +1021,7 @@ class OoxmlParser:
         body = root.find(w + "body")
         if body is None:
             return [Section(index=0, page_layout=self._page_layout)]
-        sect_elements: List[ET.Element] = []
-        for child in body:
-            if child.tag == w + "p":
-                pPr = child.find(w + "pPr")
-                if pPr is not None:
-                    sect = pPr.find(w + "sectPr")
-                    if sect is not None:
-                        sect_elements.append(sect)
-            elif child.tag == w + "sectPr":
-                sect_elements.append(child)
-            elif child.tag == w + "sdt":
-                sdt_content = child.find(w + "sdtContent")
-                if sdt_content is not None:
-                    # SectPr can be inside w:sdt/w:sdtContent (and nested sdt).
-                    # This mirrors parse_document()'s section_index handling
-                    # which looks for w:p/w:pPr/w:sectPr inside sdtContent
-                    # via iter(). Collect in document order for consistency.
-                    for elem in sdt_content.iter():
-                        if elem.tag == w + "p":
-                            pPr = elem.find(w + "pPr")
-                            if pPr is not None:
-                                sect = pPr.find(w + "sectPr")
-                                if sect is not None:
-                                    sect_elements.append(sect)
-            else:
-                if child.tag.endswith("}customXml") or child.tag.endswith("}smartTag"):
-                    for elem in child.iter():
-                        if elem.tag == w + "p":
-                            pPr = elem.find(w + "pPr")
-                            if pPr is not None:
-                                sect = pPr.find(w + "sectPr")
-                                if sect is not None:
-                                    sect_elements.append(sect)
+        sect_elements = self._section_sectPr_elements_in_order(body)
         if not sect_elements:
             sect = body.find(w + "sectPr")
             if sect is not None:
@@ -1107,8 +1121,9 @@ class OoxmlParser:
     def parse_document(self):
         """Parse document body children in document order.
 
-        Walks w:body children sequentially so w:p and w:tbl preserve their
-        original order. Returns a list of Paragraph | Table blocks.
+        Walks w:body via the shared _iter_document_flow() so block order and
+        section_index assignment use the exact same document-order traversal as
+        get_sections(). Returns a list of Paragraph | Table blocks.
         """
         if not self._document_xml:
             return []
@@ -1119,49 +1134,11 @@ class OoxmlParser:
         body = root.find(self._qn("body"))
         if body is None:
             return []
-        blocks = []
+        blocks: List = []
         sec_idx = 0
-
-        def _collect_from_container(container_elem: ET.Element, sec_idx_val: int):
-            collected: List = []
-            cur = sec_idx_val
-            for inner in container_elem:
-                if inner.tag == self._qn("p"):
-                    for para in self._parse_paragraph_blocks(inner):
-                        for img in para.images:
-                            img.section_index = cur
-                        for c in para.content:
-                            if isinstance(c, Image):
-                                c.section_index = cur
-                        para.section_index = cur
-                        collected.append(para)
-                    pPr = inner.find(self._qn("pPr"))
-                    if pPr is not None and pPr.find(self._qn("sectPr")) is not None:
-                        cur += 1
-                elif inner.tag == self._qn("tbl"):
-                    tbl = self._parse_table(inner)
-                    if tbl is not None:
-                        for row in tbl.rows:
-                            for cell in row.cells:
-                                for p in cell.content:
-                                    for img in p.images:
-                                        img.section_index = cur
-                        tbl.section_index = cur
-                        collected.append(tbl)
-                elif inner.tag == self._qn("sdt"):
-                    sdt_content = inner.find(self._qn("sdtContent"))
-                    if sdt_content is not None:
-                        nested, cur = _collect_from_container(sdt_content, cur)
-                        collected.extend(nested)
-                elif inner.tag == self._qn("sectPr"):
-                    continue
-                else:
-                    continue
-            return collected, cur
-
-        for child in body:
-            if child.tag == self._qn("p"):
-                for para in self._parse_paragraph_blocks(child):
+        for elem in self._iter_document_flow(body):
+            if elem.tag == self._qn("p"):
+                for para in self._parse_paragraph_blocks(elem):
                     for img in para.images:
                         img.section_index = sec_idx
                     for c in para.content:
@@ -1169,11 +1146,11 @@ class OoxmlParser:
                             c.section_index = sec_idx
                     para.section_index = sec_idx
                     blocks.append(para)
-                pPr = child.find(self._qn("pPr"))
+                pPr = elem.find(self._qn("pPr"))
                 if pPr is not None and pPr.find(self._qn("sectPr")) is not None:
                     sec_idx += 1
-            elif child.tag == self._qn("tbl"):
-                tbl = self._parse_table(child)
+            elif elem.tag == self._qn("tbl"):
+                tbl = self._parse_table(elem)
                 if tbl is not None:
                     for row in tbl.rows:
                         for cell in row.cells:
@@ -1182,14 +1159,7 @@ class OoxmlParser:
                                     img.section_index = sec_idx
                     tbl.section_index = sec_idx
                     blocks.append(tbl)
-            elif child.tag == self._qn("sdt"):
-                sdt_content = child.find(self._qn("sdtContent"))
-                if sdt_content is not None:
-                    inner_blocks, sec_idx = _collect_from_container(sdt_content, sec_idx)
-                    blocks.extend(inner_blocks)
-            elif child.tag == self._qn("sectPr"):
-                continue
-            else:
+            elif elem.tag == self._qn("sectPr"):
                 continue
         return blocks
 
